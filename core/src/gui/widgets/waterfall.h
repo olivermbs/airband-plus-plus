@@ -151,6 +151,12 @@ namespace ImGui {
         float* acquireLatestFFT(int& width);
         void releaseLatestFFT();
 
+        // Latest full resolution FFT line, covering the whole bandwidth around the center frequency,
+        // and the number of the FFT frame it came from
+        float* acquireRawFFT(int& size, uint64_t& frame);
+        void releaseRawFFT();
+        bool fftBufferReady();
+
         bool centerFreqMoved = false;
         bool vfoFreqChanged = false;
         bool bandplanEnabled = false;
@@ -248,6 +254,7 @@ namespace ImGui {
 
         std::recursive_mutex buf_mtx;
         std::recursive_mutex latestFFTMtx;
+        uint64_t fftFrame = 0;
         std::mutex texMtx;
         std::mutex smoothingBufMtx;
 

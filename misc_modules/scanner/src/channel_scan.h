@@ -69,6 +69,22 @@ namespace scan {
         }
     };
 
+    // Averages groups of `factor` bins (dropping the incomplete last group). Unlike the max
+    // reduction used for display, averaging lowers the noise variance, so a channel's peak
+    // bin isn't biased upwards by noise.
+    inline std::vector<float> averageBins(const float* data, int size, int factor) {
+        factor = std::max<int>(1, factor);
+        std::vector<float> out(size / factor);
+        for (int i = 0; i < (int)out.size(); i++) {
+            float sum = 0.0f;
+            for (int j = 0; j < factor; j++) {
+                sum += data[i * factor + j];
+            }
+            out[i] = sum / (float)factor;
+        }
+        return out;
+    }
+
     // Strongest bin within the channel, ignoring the bins around DC
     inline float channelPeak(const Spectrum& spectrum, double freq, double halfWidth, double dcGuard) {
         int low = std::max<int>(0, spectrum.binOf(freq - halfWidth));

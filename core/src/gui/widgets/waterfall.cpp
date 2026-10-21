@@ -565,7 +565,7 @@ namespace ImGui {
         double vfoMaxSizeFreq = _vfo->centerOffset + _vfo->bandwidth;
         int vfoMinSideOffset = std::clamp<int>(((vfoMinSizeFreq / (wholeBandwidth / 2.0)) * (double)(rawFFTSize / 2)) + (rawFFTSize / 2), 0, rawFFTSize);
         int vfoMinOffset = std::clamp<int>(((vfoMinFreq / (wholeBandwidth / 2.0)) * (double)(rawFFTSize / 2)) + (rawFFTSize / 2), 0, rawFFTSize);
-        int vfoMaxOffset = std::clamp<int>(((vfoMaxFreq / (wholeBandwidth / 2.0)) * (double)(rawFFTSize / 2)) + (rawFFTSize / 2), 0, rawFFTSize);
+        int vfoMaxOffset = std::clamp<int>(((vfoMaxFreq / (wholeBandwidth / 2.0)) * (double)(rawFFTSize / 2)) + (rawFFTSize / 2), 0, rawFFTSize - 1);
         int vfoMaxSideOffset = std::clamp<int>(((vfoMaxSizeFreq / (wholeBandwidth / 2.0)) * (double)(rawFFTSize / 2)) + (rawFFTSize / 2), 0, rawFFTSize);
 
         double avg = 0;
@@ -584,6 +584,8 @@ namespace ImGui {
             avgCount++;
         }
 
+        // No bins next to the VFO, e.g. when it is narrower than an FFT bin
+        if (avgCount == 0) { return false; }
         avg /= (double)(avgCount);
 
         // Calculate max
@@ -873,8 +875,13 @@ namespace ImGui {
         buf_mtx.unlock();
     }
 
+    // The waterfall has no lines until the first layout, both functions must then skip together
+    bool WaterFall::fftBufferReady() {
+        return rawFFTs != NULL && !(waterfallVisible && waterfallHeight <= 0);
+    }
+
     float* WaterFall::getFFTBuffer() {
-        if (rawFFTs == NULL) { return NULL; }
+        if (!fftBufferReady()) { return NULL; }
         buf_mtx.lock();
         if (waterfallVisible) {
             currentFFTLine--;
@@ -887,7 +894,8 @@ namespace ImGui {
     }
 
     void WaterFall::pushFFT() {
-        if (rawFFTs == NULL) { return; }
+        if (!fftBufferReady()) { return; }
+        fftFrame++;
         std::lock_guard<std::recursive_mutex> lck(latestFFTMtx);
         double offsetRatio = viewOffset / (wholeBandwidth / 2.0);
         int drawDataSize = (viewBandwidth / wholeBandwidth) * rawFFTSize;
@@ -911,20 +919,22 @@ namespace ImGui {
         }
 
         // Apply smoothing if enabled
+        std::unique_lock<std::mutex> smoothingLck(smoothingBufMtx);
         if (fftSmoothing && latestFFT != NULL && smoothingBuf != NULL && fftLines != 0) {
-            std::lock_guard<std::mutex> lck2(smoothingBufMtx);
             volk_32f_s32f_multiply_32f(latestFFT, latestFFT, fftSmoothingAlpha, dataWidth);
             volk_32f_s32f_multiply_32f(smoothingBuf, smoothingBuf, fftSmoothingBeta, dataWidth);
             volk_32f_x2_add_32f(smoothingBuf, latestFFT, smoothingBuf, dataWidth);
             memcpy(latestFFT, smoothingBuf, dataWidth * sizeof(float));
         }
+        smoothingLck.unlock();
 
         if (selectedVFO != "" && vfos.size() > 0) {
             float dummy;
             if (snrSmoothing) {
                 float newSNR = 0.0f;
-                calculateVFOSignalInfo(waterfallVisible ? &rawFFTs[currentFFTLine * rawFFTSize] : rawFFTs, vfos[selectedVFO], dummy, newSNR);
-                selectedVFOSNR = (snrSmoothingBeta*selectedVFOSNR) + (snrSmoothingAlpha*newSNR);
+                if (calculateVFOSignalInfo(waterfallVisible ? &rawFFTs[currentFFTLine * rawFFTSize] : rawFFTs, vfos[selectedVFO], dummy, newSNR)) {
+                    selectedVFOSNR = (snrSmoothingBeta*selectedVFOSNR) + (snrSmoothingAlpha*newSNR);
+                }
             }
             else {
                 calculateVFOSignalInfo(waterfallVisible ? &rawFFTs[currentFFTLine * rawFFTSize] : rawFFTs, vfos[selectedVFO], dummy, selectedVFOSNR);
@@ -1164,7 +1174,9 @@ namespace ImGui {
     }
 
     void WaterFall::setFFTSmoothing(bool enabled) {
-        std::lock_guard<std::mutex> lck(smoothingBufMtx);
+        // Same lock order as pushFFT
+        std::lock_guard<std::recursive_mutex> lck(latestFFTMtx);
+        std::lock_guard<std::mutex> lck2(smoothingBufMtx);
         fftSmoothing = enabled;
 
         // Free buffer if not null
@@ -1179,7 +1191,6 @@ namespace ImGui {
         // Allocate and copy existing FFT into it
         smoothingBuf = new float[dataWidth];
         if (latestFFT) {
-            std::lock_guard<std::recursive_mutex> lck2(latestFFTMtx);
             memcpy(smoothingBuf, latestFFT, dataWidth * sizeof(float));
         }
         else {
@@ -1214,6 +1225,21 @@ namespace ImGui {
 
     void WaterFall::releaseLatestFFT() {
         latestFFTMtx.unlock();
+    }
+
+    float* WaterFall::acquireRawFFT(int& size, uint64_t& frame) {
+        buf_mtx.lock();
+        if (rawFFTs == NULL || fftLines == 0) {
+            buf_mtx.unlock();
+            return NULL;
+        }
+        size = rawFFTSize;
+        frame = fftFrame;
+        return waterfallVisible ? &rawFFTs[currentFFTLine * rawFFTSize] : rawFFTs;
+    }
+
+    void WaterFall::releaseRawFFT() {
+        buf_mtx.unlock();
     }
 
     void WaterfallVFO::setOffset(double offset) {

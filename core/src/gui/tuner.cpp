@@ -86,7 +86,7 @@ namespace tuner {
 
             gui::waterfall.setViewOffset((BW / 2.0) - (viewBW / 2.0));
             double newVFOOffset = (BW / 2.0) - (vfoBW / 2.0) - (viewBW / 10.0);
-            sigpath::vfoManager.setCenterOffset(vfoName, newVFOOffset);
+            sigpath::vfoManager.setOffset(vfoName, newVFOOffset);
             gui::waterfall.setCenterFrequency(freq - newVFOOffset);
             sigpath::sourceManager.tune(freq - newVFOOffset);
         }
@@ -102,7 +102,7 @@ namespace tuner {
 
             gui::waterfall.setViewOffset((viewBW / 2.0) - (BW / 2.0));
             double newVFOOffset = (vfoBW / 2.0) - (BW / 2.0) + (viewBW / 10.0);
-            sigpath::vfoManager.setCenterOffset(vfoName, newVFOOffset);
+            sigpath::vfoManager.setOffset(vfoName, newVFOOffset);
             gui::waterfall.setCenterFrequency(freq - newVFOOffset);
             sigpath::sourceManager.tune(freq - newVFOOffset);
         }

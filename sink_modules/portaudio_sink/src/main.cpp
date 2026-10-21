@@ -104,8 +104,7 @@ public:
         if (running) {
             return;
         }
-        doStart();
-        running = true;
+        running = doStart();
     }
 
     void stop() {
@@ -124,11 +123,15 @@ public:
             // TODO: Load SR from config
             if (running) {
                 doStop();
-                doStart();
+                running = doStart();
             }
             // TODO: Save to config
         }
 
+        if (devices.empty()) {
+            ImGui::TextUnformatted("No audio output device found");
+            return;
+        }
         AudioDevice_t* dev = devices[devListId];
 
         ImGui::SetNextItemWidth(menuWidth);
@@ -136,19 +139,24 @@ public:
             _stream->setSampleRate(dev->sampleRates[dev->srId]);
             if (running) {
                 doStop();
-                doStart();
+                running = doStart();
             }
             // TODO: Save to config
         }
     }
 
 private:
-    void doStart() {
+    bool doStart() {
+        if (devices.empty()) {
+            flog::error("No audio output device available");
+            return false;
+        }
+
         const PaDeviceInfo* deviceInfo;
         AudioDevice_t* dev = devices[devListId];
         PaStreamParameters outputParams;
         deviceInfo = Pa_GetDeviceInfo(dev->index);
-        outputParams.channelCount = 2;
+        outputParams.channelCount = dev->channels;
         outputParams.sampleFormat = paFloat32;
         outputParams.hostApiSpecificStreamInfo = NULL;
         outputParams.device = dev->index;
@@ -167,6 +175,7 @@ private:
             //err = Pa_OpenStream(&stream, NULL, &outputParams, sampleRate, bufferSize, 0, _stereo_cb, this);
         }
         else {
+            s2m.start();
             monoRB.data.setMaxLatency(bufferSize * 2);
             monoRB.start();
             // stereoPacker.setSampleCount(bufferSize);
@@ -177,16 +186,20 @@ private:
 
         if (err != 0) {
             flog::error("Error while opening audio stream: ({0}) => {1}", err, Pa_GetErrorText(err));
-            return;
+            s2m.stop();
+            monoRB.stop();
+            stereoRB.stop();
+            return false;
         }
 
         err = Pa_StartStream(stream);
         if (err != 0) {
             flog::error("Error while starting audio stream: ({0}) => {1}", err, Pa_GetErrorText(err));
-            return;
+            doStop();
+            return false;
         }
         flog::info("Audio device open.");
-        running = true;
+        return true;
     }
 
     void doStop() {
@@ -214,7 +227,7 @@ private:
             memset(output, 0, frameCount * sizeof(float));
             return 0;
         }
-        _this->monoRB.data.read((float*)output, frameCount);
+        readAvailable(_this->monoRB.data, (float*)output, frameCount);
         return 0;
     }
 
@@ -225,8 +238,17 @@ private:
             memset(output, 0, frameCount * sizeof(dsp::stereo_t));
             return 0;
         }
-        _this->stereoRB.data.read((dsp::stereo_t*)output, frameCount);
+        readAvailable(_this->stereoRB.data, (dsp::stereo_t*)output, frameCount);
         return 0;
+    }
+
+    // Blocking here would stall the CoreAudio IO thread and can deadlock other audio
+    // devices being opened, so play whatever is buffered and pad with silence
+    template <class T>
+    static void readAvailable(dsp::buffer::RingBuffer<T>& rb, T* output, unsigned long frameCount) {
+        int count = std::min<int>(rb.getReadable(), (int)frameCount);
+        if (count <= 0 || rb.read(output, count) < 0) { count = 0; }
+        memset(&output[count], 0, (frameCount - count) * sizeof(T));
     }
 
     // static int _mono_cb(const void *input, void *output, unsigned long frameCount,

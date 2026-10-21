@@ -52,6 +52,7 @@ namespace dsp::noise_reduction {
             tracker.setMargin(margin);
         }
 
+        // Level and noise floor of the auto mode, in dB
         float getLevel() { return _lastLevel; }
         float getNoiseFloor() { return _noiseFloor; }
         bool isOpen() { return _open; }
@@ -65,18 +66,20 @@ namespace dsp::noise_reduction {
             volk_32f_accumulator_s32f(&sum, normBuffer, count);
             sum /= (float)count;
 
+            // The manual level keeps its historical scale, auto mode works in real dB
             float level = 10.0f * log10f(sum);
+            float levelDb = 2.0f * level;
             bool open;
             std::unique_lock<std::mutex> lck(trackerMtx);
             if (_auto) {
-                open = tracker.update(level, (double)count / _samplerate);
+                open = tracker.update(levelDb, (double)count / _samplerate);
                 _noiseFloor = tracker.getNoiseFloor();
             }
             else {
                 open = level >= _level;
             }
             lck.unlock();
-            _lastLevel = level;
+            _lastLevel = levelDb;
             _open = open;
 
             if (open) {

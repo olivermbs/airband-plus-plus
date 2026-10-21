@@ -951,9 +951,9 @@ private:
     const double MAX_NB = 10.0;
     const double MIN_SQUELCH = -100.0;
     const double MAX_SQUELCH = 0.0;
-    const float DEFAULT_SQUELCH_MARGIN = 3.0f;
-    const float MIN_SQUELCH_MARGIN = 0.5f;
-    const float MAX_SQUELCH_MARGIN = 20.0f;
+    const float DEFAULT_SQUELCH_MARGIN = 5.0f;
+    const float MIN_SQUELCH_MARGIN = 1.0f;
+    const float MAX_SQUELCH_MARGIN = 30.0f;
 
     bool enabled = true;
 };

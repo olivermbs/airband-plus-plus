@@ -8,8 +8,9 @@ namespace dsp::noise_reduction {
     //
     // The floor follows the noise between transmissions as a low quantile: it falls
     // quickly and rises slowly, so it settles near the bottom of the noise fluctuation.
-    // While the gate is open the floor barely rises, so a long transmission is not
-    // mistaken for noise, but a permanent rise of the noise level is still recovered from.
+    // While the gate is open the floor barely rises, so a transmission is not mistaken for
+    // noise. If it stays open for longer than any transmission would last, the noise level
+    // itself has most likely risen (e.g. a gain change), so the floor catches up faster.
     class NoiseFloorTracker {
     public:
         void setMargin(float margin) { _margin = margin; }
@@ -19,6 +20,7 @@ namespace dsp::noise_reduction {
         void reset() {
             _initialized = false;
             _open = false;
+            _openTime = 0.0;
         }
 
         bool update(float level, double duration) {
@@ -30,22 +32,26 @@ namespace dsp::noise_reduction {
                 _initialized = true;
             }
 
+            // The closing threshold must stay above the floor, or steady noise keeps the gate open
             float threshold = _floor + _margin;
+            float hysteresis = std::min<float>(_hysteresis, _margin / 2.0f);
             if (level >= threshold) {
                 _open = true;
                 _hangRemaining = _hangTime;
             }
-            else if (_open && level < threshold - _hysteresis) {
+            else if (_open && level < threshold - hysteresis) {
                 _hangRemaining -= duration;
                 if (_hangRemaining <= 0.0) { _open = false; }
             }
+            _openTime = _open ? _openTime + duration : 0.0;
 
             if (level < _floor) {
                 _floor = std::max<float>(level, _floor - FALL_RATE * duration);
                 return _open;
             }
 
-            float riseRate = _open ? OPEN_RISE_RATE : RISE_RATE;
+            float riseRate = RISE_RATE;
+            if (_open) { riseRate = (_openTime < LONG_OPEN_TIME) ? OPEN_RISE_RATE : STUCK_RISE_RATE; }
             _floor = std::min<float>(level, _floor + riseRate * duration);
             return _open;
         }
@@ -60,6 +66,8 @@ namespace dsp::noise_reduction {
         static constexpr float FALL_RATE = 10.0f;
         static constexpr float RISE_RATE = 2.5f;
         static constexpr float OPEN_RISE_RATE = 0.05f;
+        static constexpr float STUCK_RISE_RATE = 1.0f;
+        static constexpr double LONG_OPEN_TIME = 30.0;
 
         float _margin = 3.0f;
         float _hysteresis = 1.0f;
@@ -70,5 +78,6 @@ namespace dsp::noise_reduction {
         float _floor = 0.0f;
         float _level = 0.0f;
         double _hangRemaining = 0.0;
+        double _openTime = 0.0;
     };
 }

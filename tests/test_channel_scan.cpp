@@ -154,4 +154,31 @@ TEST(signal_center_ignores_noise_and_dc) {
     CHECK_NEAR(signalCenter(s.view, center + 8000.0, 8750.0, 3000.0), binCenter, 1.0);
 }
 
+TEST(average_bins_groups_raw_bins) {
+    std::vector<float> raw = { -60, -62, -40, -40, -61, -59, -70 };
+    std::vector<float> avg = averageBins(raw.data(), (int)raw.size(), 2);
+    CHECK(avg.size() == 3);
+    CHECK_NEAR(avg[0], -61.0f, 0.001f);
+    CHECK_NEAR(avg[1], -40.0f, 0.001f);
+    CHECK_NEAR(avg[2], -60.0f, 0.001f);
+
+    CHECK(averageBins(raw.data(), (int)raw.size(), 1).size() == raw.size());
+}
+
+TEST(averaging_keeps_noise_peaks_low) {
+    // Max of noise bins in a channel must stay well below the trigger after averaging
+    std::mt19937 rng(7);
+    std::exponential_distribution<float> power(1.0f);
+    std::vector<float> raw(65536);
+    for (auto& v : raw) { v = 10.0f * std::log10(power(rng)); }
+    std::vector<float> avg = averageBins(raw.data(), (int)raw.size(), 16);
+    Spectrum s = { avg.data(), (int)avg.size(), 119e6, 2.4e6, 120.2e6 };
+    float worst = 0.0f;
+    for (double f = 119.1e6; f < 120.1e6; f += STEP_833) {
+        float snr = channelPeak(s, f, 2900.0, 1000.0) - noiseFloor(s, f, 150000.0, 2900.0, 1000.0, 0.3f);
+        worst = std::max(worst, snr);
+    }
+    CHECK(worst < 6.0f);
+}
+
 int main() { return runTests(); }

@@ -258,6 +258,8 @@ void MainWindow::vfoAddedHandler(VFOManager::VFO* vfo, void* ctx) {
 }
 
 void MainWindow::draw() {
+    onFrame.emit(playing);
+
     ImGui::Begin("Main", NULL, WINDOW_FLAGS);
     ImVec4 textCol = ImGui::GetStyleColorVec4(ImGuiCol_Text);
 

@@ -291,6 +291,7 @@ void IQFrontEnd::updateFFTPath(bool updateWaterfall) {
     }
 
     // Update FFT plan
+    fftwf_destroy_plan(fftwPlan);
     fftwf_free(fftInBuf);
     fftwf_free(fftOutBuf);
     fftInBuf = (fftwf_complex*)fftwf_malloc(_fftSize * sizeof(fftwf_complex));

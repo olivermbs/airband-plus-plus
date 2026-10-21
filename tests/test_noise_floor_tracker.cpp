@@ -85,10 +85,20 @@ TEST(floor_follows_noise_up_while_closed) {
 TEST(recovers_from_noise_jump_that_opened_it) {
     std::mt19937 rng(7);
     NoiseFloorTracker t;
-    t.setMargin(3.0f);
-    feed(t, -45.0f, 5.0, rng);
-    feed(t, -40.0f, 120.0, rng);
+    t.setMargin(5.0f);
+    feed(t, -50.0f, 5.0, rng);
+    // E.g. the RF gain was raised by 10dB
+    feed(t, -40.0f, 45.0, rng);
     CHECK(!t.isOpen());
+}
+
+TEST(stays_open_for_a_long_atc_transmission) {
+    std::mt19937 rng(8);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    feed(t, -50.0f, 5.0, rng);
+    feed(t, -38.0f, 30.0, rng);
+    CHECK(t.isOpen());
 }
 
 TEST(ignores_silent_blocks) {
@@ -96,6 +106,16 @@ TEST(ignores_silent_blocks) {
     t.update(-40.0f, BLOCK);
     t.update(-INFINITY, BLOCK);
     CHECK(t.getNoiseFloor() > -41.0f);
+}
+
+TEST(closes_with_margin_below_hysteresis) {
+    NoiseFloorTracker t;
+    t.setMargin(0.5f);
+    for (int i = 0; i < 100; i++) { t.update(-40.0f, BLOCK); }
+    t.update(-35.0f, BLOCK);
+    CHECK(t.isOpen());
+    for (int i = 0; i < 1000; i++) { t.update(-40.0f, BLOCK); }
+    CHECK(!t.isOpen());
 }
 
 int main() { return runTests(); }

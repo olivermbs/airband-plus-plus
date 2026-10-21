@@ -1,4 +1,5 @@
 #include <utils/flog.h>
+#include <array>
 #include <module.h>
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
@@ -530,10 +531,18 @@ private:
 
     static void asyncHandler(unsigned char* buf, uint32_t len, void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+
+        // There are only 256 possible sample values, so convert them with a table
+        static const std::array<float, 256> conversion = []() {
+            std::array<float, 256> table;
+            for (int i = 0; i < 256; i++) { table[i] = ((float)i - 127.4f) / 128.0f; }
+            return table;
+        }();
+
         int sampCount = len / 2;
         for (int i = 0; i < sampCount; i++) {
-            _this->stream.writeBuf[i].re = ((float)buf[i * 2] - 127.4) / 128.0f;
-            _this->stream.writeBuf[i].im = ((float)buf[(i * 2) + 1] - 127.4) / 128.0f;
+            _this->stream.writeBuf[i].re = conversion[buf[i * 2]];
+            _this->stream.writeBuf[i].im = conversion[buf[(i * 2) + 1]];
         }
         if (!_this->stream.swap(sampCount)) { return; }
     }

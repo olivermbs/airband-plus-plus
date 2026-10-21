@@ -33,6 +33,9 @@ public:
 
     Event<bool> onPlayStateChange;
 
+    // Emitted on the GUI thread at the start of every frame with the play state, before anything is drawn
+    Event<bool> onFrame;
+
 private:
     static void vfoAddedHandler(VFOManager::VFO* vfo, void* ctx);
 

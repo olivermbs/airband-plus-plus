@@ -46,9 +46,13 @@ void ConfigManager::load(json def, bool lock) {
 
 void ConfigManager::save(bool lock) {
     if (lock) { mtx.lock(); }
-    std::ofstream file(path.c_str());
-    file << conf.dump(4);
+    std::string tmpPath = path + ".tmp";
+    std::ofstream file(tmpPath.c_str());
+    file << conf.dump(4, ' ', false, json::error_handler_t::replace);
     file.close();
+    std::error_code err;
+    std::filesystem::rename(tmpPath, path, err);
+    if (err) { flog::error("Could not save config file '{}': {}", path, err.message()); }
     if (lock) { mtx.unlock(); }
 }
 

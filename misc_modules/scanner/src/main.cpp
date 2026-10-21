@@ -10,16 +10,14 @@
 #include <utils/flog.h>
 #include <chrono>
 #include <map>
-#include <mutex>
 #include <set>
-#include <thread>
 #include "channel_scan.h"
 
 SDRPP_MOD_INFO{
     /* Name:            */ "scanner",
     /* Description:     */ "Frequency scanner for SDR++",
     /* Author:          */ "Ryzerth;olivermbs",
-    /* Version:         */ 0, 2, 0,
+    /* Version:         */ 0, 3, 0,
     /* Max instances    */ 1
 };
 
@@ -27,17 +25,23 @@ ConfigManager config;
 
 using Clock = std::chrono::steady_clock;
 
+// The scanner runs entirely on the GUI thread, from the main window's frame event. That is
+// where VFOs are created and deleted and where tuning normally happens, so no locking is needed.
 class ScannerModule : public ModuleManager::Instance {
 public:
     ScannerModule(std::string name) {
         this->name = name;
         loadConfig();
         gui::menu.registerEntry(name, menuHandler, this, NULL);
+
+        frameHandler.handler = frameEventHandler;
+        frameHandler.ctx = this;
+        gui::mainWindow.onFrame.bindHandler(&frameHandler);
     }
 
     ~ScannerModule() {
+        gui::mainWindow.onFrame.unbindHandler(&frameHandler);
         gui::menu.removeEntry(name);
-        stop();
     }
 
     void postInit() {}
@@ -47,6 +51,7 @@ public:
     }
 
     void disable() {
+        stop("");
         enabled = false;
     }
 
@@ -115,7 +120,7 @@ private:
         ImGui::LeftLabel("Tuning Time (ms)");
         ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
         if (ImGui::InputInt(("##tuning_time_scanner_" + _this->name).c_str(), &_this->tuningTime, 50, 500)) {
-            _this->tuningTime = std::clamp<int>(_this->tuningTime, 50, 10000);
+            _this->tuningTime = std::clamp<int>(_this->tuningTime, 0, 10000);
             changed = true;
         }
         ImGui::LeftLabel("Linger Time (ms)");
@@ -132,52 +137,40 @@ private:
         }
         if (changed) { _this->saveConfig(); }
 
-        // The worker needs the lock to finish, so stopping has to happen after it is released
-        bool stopClicked = false;
-        _this->drawControls(menuWidth, stopClicked);
-        if (stopClicked) { _this->stop(); }
-    }
-
-    void drawControls(float menuWidth, bool& stopClicked) {
-        std::lock_guard<std::mutex> lck(scanMtx);
-
-        ImGui::BeginTable(("scanner_bottom_btn_table" + name).c_str(), 2);
+        ImGui::BeginTable(("scanner_bottom_btn_table" + _this->name).c_str(), 2);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        if (ImGui::Button(("<<##scanner_back_" + name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-            scanUp = false;
-            skipAhead();
+        if (ImGui::Button(("<<##scanner_back_" + _this->name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+            _this->scanUp = false;
+            _this->skipAhead();
         }
         ImGui::TableSetColumnIndex(1);
-        if (ImGui::Button((">>##scanner_forw_" + name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-            scanUp = true;
-            skipAhead();
+        if (ImGui::Button((">>##scanner_forw_" + _this->name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+            _this->scanUp = true;
+            _this->skipAhead();
         }
         ImGui::EndTable();
 
-        if (!running) {
-            if (ImGui::Button(("Start##scanner_start_" + name).c_str(), ImVec2(menuWidth, 0))) {
-                start();
+        if (!_this->running) {
+            if (ImGui::Button(("Start##scanner_start_" + _this->name).c_str(), ImVec2(menuWidth, 0))) {
+                _this->start();
             }
-            if (!error.empty()) {
-                ImGui::TextColored(ImVec4(1, 0, 0, 1), "%s", error.c_str());
+            if (!_this->error.empty()) {
+                ImGui::TextColored(ImVec4(1, 0, 0, 1), "%s", _this->error.c_str());
             }
             else {
                 ImGui::TextUnformatted("Status: Idle");
             }
         }
         else {
-            if (ImGui::Button(("Stop##scanner_start_" + name).c_str(), ImVec2(menuWidth, 0))) {
-                stopClicked = true;
+            if (ImGui::Button(("Stop##scanner_start_" + _this->name).c_str(), ImVec2(menuWidth, 0))) {
+                _this->stop("");
             }
+            _this->drawStatus();
         }
 
-        if (running) {
-            drawStatus();
-        }
-
-        drawWarnings();
-        drawLockouts();
+        _this->drawWarnings();
+        _this->drawLockouts();
     }
 
     void drawStatus() {
@@ -221,9 +214,9 @@ private:
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Center tuning is on, switch it off");
         }
 
-        if (binWidth > step / 3.0) {
-            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "FFT too coarse (%.1f kHz/px)", binWidth / 1e3);
-            ImGui::TextWrapped("Make the window wider or lower the sample rate.");
+        if (rawBinWidth > step / 4.0) {
+            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "FFT too coarse (%.1f kHz/bin)", rawBinWidth / 1e3);
+            ImGui::TextWrapped("Increase the FFT size in the display settings.");
         }
     }
 
@@ -276,10 +269,10 @@ private:
 
     void start() {
         if (running) { return; }
-        if (workerThread.joinable()) { workerThread.join(); }
 
         error.clear();
-        if (gui::waterfall.selectedVFO.empty()) {
+        vfoName = gui::waterfall.selectedVFO;
+        if (vfoName.empty()) {
             error = "No VFO selected";
             return;
         }
@@ -296,88 +289,118 @@ private:
 
         plannedBandwidth = 0.0;
         windowId = scanUp ? -1 : 0;
-        nextWindow();
-
         running = true;
-        workerThread = std::thread(&ScannerModule::worker, this);
+        nextWindow();
     }
 
-    void stop() {
+    void stop(const std::string& reason) {
         running = false;
-        if (workerThread.joinable()) { workerThread.join(); }
+        error = reason;
     }
 
-    void worker() {
-        while (running) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(TICK_MS));
-            std::lock_guard<std::mutex> lck(scanMtx);
-            tick();
+    static void frameEventHandler(bool playing, void* ctx) {
+        ScannerModule* _this = (ScannerModule*)ctx;
+        if (!_this->running) { return; }
+
+        auto now = Clock::now();
+        if (now - _this->lastTick < std::chrono::milliseconds(TICK_MS)) { return; }
+        _this->lastTick = now;
+        _this->tick(playing, now);
+    }
+
+    void tick(bool playing, Clock::time_point now) {
+        if (!playing) {
+            stop("Stopped: the SDR was stopped");
+            return;
         }
-    }
-
-    void tick() {
-        if (gui::waterfall.selectedVFO.empty() || !gui::mainWindow.sdrIsRunning()) {
-            error = "Stopped: SDR or VFO went away";
-            running = false;
+        if (gui::waterfall.selectedVFO != vfoName || gui::waterfall.vfos.find(vfoName) == gui::waterfall.vfos.end()) {
+            stop("Stopped: the VFO changed");
             return;
         }
 
-        auto now = Clock::now();
-        if (state == State::Tuning) {
-            if (now - stateSince < std::chrono::milliseconds(tuningTime)) { return; }
-            enterSearching();
-        }
-
         // Retune if the user moved the SDR or changed its sample rate
-        const scan::Window& window = windows[windowId];
-        if (gui::waterfall.getBandwidth() != plannedBandwidth || std::fabs(gui::waterfall.getCenterFrequency() - window.center) > 1.0) {
+        if (gui::waterfall.getBandwidth() != plannedBandwidth || std::fabs(gui::waterfall.getCenterFrequency() - windows[windowId].center) > 1.0) {
             replanAndTune();
             return;
         }
 
-        int width = 0;
-        float* data = gui::waterfall.acquireLatestFFT(width);
-        if (!data) { return; }
-
-        double viewBandwidth = gui::waterfall.getViewBandwidth();
-        double viewStart = gui::waterfall.getCenterFrequency() + gui::waterfall.getViewOffset() - (viewBandwidth / 2.0);
-        scan::Spectrum spectrum = { data, width, viewStart, viewBandwidth, gui::waterfall.getCenterFrequency() };
-        binWidth = spectrum.binWidth();
+        if (state == State::Tuning && now - stateSince < std::chrono::milliseconds(tuningTime)) { return; }
+        if (!readSpectrum()) { return; }
+        if (state == State::Tuning) { enterSearching(); }
 
         if (state == State::Receiving) {
-            receivingSNR = channelSNR(spectrum, receivingChannel);
-            double center = carrierCenter(spectrum, receivingChannel);
-            gui::waterfall.releaseLatestFFT();
-            if (receivingSNR >= trigger) { followCarrier(center); }
             updateReceiving(now);
             return;
         }
 
+        search(now);
+    }
+
+    // Copies the newest FFT frame. Frames that were already used, and frames that may still
+    // hold samples from before the last retune, are rejected.
+    bool readSpectrum() {
+        int size = 0;
+        uint64_t frame = 0;
+        float* raw = gui::waterfall.acquireRawFFT(size, frame);
+        if (!raw) { return false; }
+        if (frame == lastFrame || frame < tuneFrame + FRAMES_AFTER_TUNE) {
+            gui::waterfall.releaseRawFFT();
+            return false;
+        }
+        lastFrame = frame;
+        rawFFT.assign(raw, raw + size);
+        gui::waterfall.releaseRawFFT();
+
+        double center = gui::waterfall.getCenterFrequency();
+        rawBinWidth = plannedBandwidth / (double)size;
+        double start = center - (plannedBandwidth / 2.0) - (rawBinWidth / 2.0);
+        fineSpectrum = { rawFFT.data(), size, start, plannedBandwidth, center };
+
+        int factor = std::max<int>(1, (int)std::floor(step / DETECTION_BINS_PER_STEP / rawBinWidth));
+        detectionBins = scan::averageBins(rawFFT.data(), size, factor);
+        detectionSpectrum = { detectionBins.data(), (int)detectionBins.size(), start, rawBinWidth * factor * detectionBins.size(), center };
+        return true;
+    }
+
+    void search(Clock::time_point now) {
+        const scan::Window& window = windows[windowId];
         int count = window.last - window.first + 1;
         std::vector<float> snr(count);
         for (int i = 0; i < count; i++) {
-            snr[i] = isSkipped(grid.freq(window.first + i), now) ? -INFINITY : channelSNR(spectrum, window.first + i);
+            snr[i] = isSkipped(grid.freq(window.first + i), now) ? -INFINITY : channelSNR(window.first + i);
             hits[i] = (snr[i] >= trigger) ? hits[i] + 1 : 0;
         }
 
         int picked = scan::pickStrongest(snr, hits, CONFIRM_FRAMES, trigger);
         if (picked < 0) {
-            gui::waterfall.releaseLatestFFT();
             searchFrames++;
-            if (searchFrames * TICK_MS >= SEARCH_TIME_MS) { nextWindow(); }
+            if (searchFrames >= SEARCH_FRAMES) { nextWindow(); }
             return;
         }
 
-        double center = carrierCenter(spectrum, window.first + picked);
-        gui::waterfall.releaseLatestFFT();
-        listen(window.first + picked, snr[picked], center, now);
+        // Name the channel after where the carrier actually is
+        double center = carrierCenter(window.first + picked);
+        int channel = std::clamp<int>(grid.indexOf(center), window.first, window.last);
+        listen(channel, snr[picked], center, now);
     }
 
     void updateReceiving(Clock::time_point now) {
+        // The user tuned away: stop interfering and stay where they put the VFO
+        double actualFreq = gui::waterfall.getCenterFrequency() + gui::waterfall.vfos[vfoName]->centerOffset;
+        if (std::fabs(actualFreq - vfoFreq) > 1.0) {
+            hold = true;
+            vfoFreq = actualFreq;
+        }
+
+        receivingSNR = channelSNR(receivingChannel);
         if (receivingSNR >= trigger - RECEIVE_HYSTERESIS) {
             lastSignal = now;
         }
         if (hold) { return; }
+
+        if (receivingSNR >= trigger) {
+            followCarrier(carrierCenter(receivingChannel));
+        }
 
         if (maxListenTime > 0 && now - receiveStart > std::chrono::seconds(maxListenTime)) {
             tempSkips[std::llround(grid.freq(receivingChannel))] = now + std::chrono::seconds(SKIP_TIME_S);
@@ -394,23 +417,26 @@ private:
         return step * (detectionWidth / 100.0) / 2.0;
     }
 
-    float channelSNR(const scan::Spectrum& spectrum, int channel) {
+    double dcGuard() {
+        return detectionSpectrum.binWidth() * 1.5;
+    }
+
+    float channelSNR(int channel) {
         double freq = grid.freq(channel);
-        double dcGuard = spectrum.binWidth() * 1.5;
-        float peak = scan::channelPeak(spectrum, freq, detectionHalfWidth(), dcGuard);
-        float floor = scan::noiseFloor(spectrum, freq, FLOOR_RADIUS, detectionHalfWidth(), dcGuard, FLOOR_QUANTILE);
+        float peak = scan::channelPeak(detectionSpectrum, freq, detectionHalfWidth(), dcGuard());
+        float floor = scan::noiseFloor(detectionSpectrum, freq, FLOOR_RADIUS, detectionHalfWidth(), dcGuard(), FLOOR_QUANTILE);
         return peak - floor;
     }
 
-    double carrierCenter(const scan::Spectrum& spectrum, int channel) {
-        return scan::signalCenter(spectrum, grid.freq(channel), detectionHalfWidth(), spectrum.binWidth() * 1.5);
+    // Centered on the full resolution FFT, a carrier is located to within a few Hz
+    double carrierCenter(int channel) {
+        return scan::signalCenter(fineSpectrum, grid.freq(channel), detectionHalfWidth(), dcGuard());
     }
 
     // Keeps the VFO in the middle of the carrier, smoothed so the audio doesn't jump around
     void followCarrier(double center) {
         trackedCenter += CENTER_SMOOTHING * (center - trackedCenter);
-        double tolerance = std::max<double>(binWidth / 2.0, MIN_RETUNE_HZ);
-        if (std::fabs(trackedCenter - vfoFreq) < tolerance) { return; }
+        if (std::fabs(trackedCenter - vfoFreq) < MIN_RETUNE_HZ) { return; }
         tuneVFO(trackedCenter);
     }
 
@@ -487,24 +513,21 @@ private:
 
     void tuneWindow() {
         const scan::Window& window = windows[windowId];
-
-        // The whole spectrum has to be visible for the FFT to cover the window
-        gui::waterfall.setViewBandwidth(plannedBandwidth);
-        gui::waterfall.setViewOffset(0);
-        gui::mainWindow.setViewBandwidthSlider(1.0f);
-
         gui::waterfall.setCenterFrequency(window.center);
         gui::waterfall.centerFreqMoved = true;
         sigpath::sourceManager.tune(window.center);
         tuneVFO(grid.freq(window.first));
+
+        int size;
+        if (gui::waterfall.acquireRawFFT(size, tuneFrame)) {
+            gui::waterfall.releaseRawFFT();
+        }
 
         state = State::Tuning;
         stateSince = Clock::now();
     }
 
     void tuneVFO(double freq) {
-        std::string vfoName = gui::waterfall.selectedVFO;
-        if (vfoName.empty()) { return; }
         vfoFreq = freq;
         sigpath::vfoManager.setCenterOffset(vfoName, freq - gui::waterfall.getCenterFrequency());
     }
@@ -550,42 +573,54 @@ private:
     static constexpr double AIRBAND_833 = 25000.0 / 3.0;
 
     static constexpr int TICK_MS = 50;
-    static constexpr int SEARCH_TIME_MS = 300;
+    static constexpr int SEARCH_FRAMES = 4;
     static constexpr int CONFIRM_FRAMES = 2;
+    static constexpr uint64_t FRAMES_AFTER_TUNE = 2;
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
     static constexpr double CENTER_SMOOTHING = 0.3;
-    static constexpr double MIN_RETUNE_HZ = 300.0;
+    static constexpr double MIN_RETUNE_HZ = 200.0;
 
     // Only the flat middle of the spectrum is used, the edges roll off
     static constexpr double USABLE_BANDWIDTH = 0.85;
+    static constexpr double DETECTION_BINS_PER_STEP = 12.0;
     static constexpr double FLOOR_RADIUS = 150000.0;
     static constexpr float FLOOR_QUANTILE = 0.3f;
 
     std::string name;
     bool enabled = true;
+    EventHandler<bool> frameHandler;
 
     double startFreq = 118000000.0;
     double stopFreq = 136975000.0;
     double step = AIRBAND_25K;
     float trigger = 8.0f;
     float detectionWidth = 70.0f;
-    int tuningTime = 300;
+    int tuningTime = 100;
     int lingerTime = 2000;
     int maxListenTime = 120;
     std::set<long long> lockouts;
     std::map<long long, Clock::time_point> tempSkips;
 
-    std::atomic<bool> running = false;
+    bool running = false;
     std::string error;
+    std::string vfoName;
     bool scanUp = true;
     bool hold = false;
+    Clock::time_point lastTick;
 
     scan::ChannelGrid grid = { 0.0, 0.0, 0.0 };
     std::vector<scan::Window> windows;
     double plannedBandwidth = 0.0;
-    double binWidth = 0.0;
     int windowId = 0;
+
+    std::vector<float> rawFFT;
+    std::vector<float> detectionBins;
+    scan::Spectrum fineSpectrum = {};
+    scan::Spectrum detectionSpectrum = {};
+    double rawBinWidth = 0.0;
+    uint64_t lastFrame = 0;
+    uint64_t tuneFrame = 0;
 
     State state = State::Tuning;
     Clock::time_point stateSince;
@@ -598,9 +633,6 @@ private:
     double trackedCenter = 0.0;
     Clock::time_point receiveStart;
     Clock::time_point lastSignal;
-
-    std::thread workerThread;
-    std::mutex scanMtx;
 };
 
 MOD_EXPORT void _INIT_() {
