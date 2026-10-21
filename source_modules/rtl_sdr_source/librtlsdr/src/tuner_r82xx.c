@@ -253,13 +253,30 @@ static void shadow_store(struct r82xx_priv *priv, uint8_t reg, const uint8_t *va
 	memcpy(&priv->regs[r], val, len);
 }
 
+static int shadow_equal(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
+			unsigned int len)
+{
+	int r = reg - REG_SHADOW_START;
+
+	if (r < 0 || r + (int)len > NUM_REGS)
+		return 0;
+
+	return memcmp(&priv->regs[r], val, len) == 0;
+}
+
 static int r82xx_write(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
 		       unsigned int len)
 {
 	int rc, size, pos = 0;
+	uint8_t start_reg = reg;
+	const uint8_t *start_val = val;
+	unsigned int start_len = len;
 
-	/* Store the shadow registers */
-	shadow_store(priv, reg, val, len);
+	/* Once initialized, the shadow registers mirror the chip. Rewriting the
+	 * same values only costs USB round trips, skipping them makes retuning
+	 * several times faster, which matters when scanning. */
+	if (priv->init_done && !priv->shadow_unreliable && shadow_equal(priv, reg, val, len))
+		return 0;
 
 	do {
 		if (len > priv->cfg->max_i2c_msg_len - 1)
@@ -275,6 +292,8 @@ static int r82xx_write(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
 					 priv->buf, size + 1);
 
 		if (rc != size + 1) {
+			/* the chip may have taken part of it, stop trusting the shadow */
+			priv->shadow_unreliable = 1;
 			fprintf(stderr, "%s: i2c wr failed=%d reg=%02x len=%d\n",
 				   __FUNCTION__, rc, reg, size);
 			if (rc < 0)
@@ -286,6 +305,9 @@ static int r82xx_write(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
 		len -= size;
 		pos += size;
 	} while (len > 0);
+
+	/* Only remember what actually reached the chip */
+	shadow_store(priv, start_reg, start_val, start_len);
 
 	return 0;
 }
@@ -509,10 +531,6 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	ni = (nint - 13) / 4;
 	si = nint - 4 * ni - 13;
 
-	rc = r82xx_write_reg(priv, 0x14, ni + (si << 6));
-	if (rc < 0)
-		return rc;
-
 	/* pw_sdm */
 	if (!vco_fra)
 		val = 0x08;
@@ -534,10 +552,12 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		n_sdm <<= 1;
 	}
 
-	rc = r82xx_write_reg(priv, 0x16, sdm >> 8);
-	if (rc < 0)
-		return rc;
-	rc = r82xx_write_reg(priv, 0x15, sdm & 0xff);
+	/* Ni/Si (0x14) and the SDM (0x15, 0x16) are adjacent, one I2C burst
+	 * instead of three saves two USB round trips per retune */
+	data[0] = ni + (si << 6);
+	data[1] = sdm & 0xff;
+	data[2] = sdm >> 8;
+	rc = r82xx_write(priv, 0x14, data, 3);
 	if (rc < 0)
 		return rc;
 

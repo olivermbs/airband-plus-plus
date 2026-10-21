@@ -15,6 +15,21 @@ elseif (ANDROID)
         /sdr-kit/${ANDROID_ABI}/lib/libusb1.0.so
         /sdr-kit/${ANDROID_ABI}/lib/librtlsdr.so
     )
+elseif (OPT_BUILD_BUNDLED_LIBRTLSDR)
+    find_package(PkgConfig)
+
+    pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
+
+    # Static and with hidden symbols, so it can't clash with a system librtlsdr loaded by another module
+    file(GLOB LIBRTLSDR_SRC "librtlsdr/src/*.c")
+    add_library(rtlsdr_bundled STATIC ${LIBRTLSDR_SRC})
+    set_target_properties(rtlsdr_bundled PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+    target_compile_definitions(rtlsdr_bundled PUBLIC rtlsdr_STATIC)
+    target_include_directories(rtlsdr_bundled PUBLIC "librtlsdr/include" ${LIBUSB_INCLUDE_DIRS})
+    target_link_directories(rtlsdr_bundled PUBLIC ${LIBUSB_LIBRARY_DIRS})
+    target_link_libraries(rtlsdr_bundled PUBLIC ${LIBUSB_LIBRARIES})
+
+    target_link_libraries(rtl_sdr_source PRIVATE rtlsdr_bundled)
 else (MSVC)
     find_package(PkgConfig)
 

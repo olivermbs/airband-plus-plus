@@ -1,5 +1,7 @@
 #include <utils/flog.h>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <module.h>
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
@@ -11,6 +13,10 @@
 
 #ifdef __ANDROID__
 #include <android_backend.h>
+#endif
+
+#ifdef __APPLE__
+#include <pthread.h>
 #endif
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
@@ -94,9 +100,17 @@ public:
         selectByName(selectedDevName);
 
         sigpath::sourceManager.registerSource("RTL-SDR", &handler);
+
+        // Recovery from a lost device needs the GUI, there is no main window in server mode
+        if (!serverMode) {
+            frameHandler.handler = frameEventHandler;
+            frameHandler.ctx = this;
+            gui::mainWindow.onFrame.bindHandler(&frameHandler);
+        }
     }
 
     ~RTLSDRSourceModule() {
+        if (!serverMode) { gui::mainWindow.onFrame.unbindHandler(&frameHandler); }
         stop(this);
         sigpath::sourceManager.unregisterSource("RTL-SDR");
     }
@@ -157,6 +171,18 @@ public:
         devListTxt += fakeName;
         devListTxt += '\0';
 #endif
+    }
+
+    // Device names end with "##<index>", which can change when the device is plugged back in
+    static std::string withoutIndex(const std::string& devName) {
+        return devName.substr(0, devName.find("##"));
+    }
+
+    int findDevice(const std::string& devName) {
+        for (int i = 0; i < devCount; i++) {
+            if (withoutIndex(devNames[i]) == withoutIndex(devName)) { return i; }
+        }
+        return -1;
     }
 
     void selectFirst() {
@@ -275,18 +301,22 @@ private:
 
     static void menuSelected(void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+        _this->selected = true;
         core::setInputSampleRate(_this->sampleRate);
         flog::info("RTLSDRSourceModule '{0}': Menu Select!", _this->name);
     }
 
     static void menuDeselected(void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+        _this->selected = false;
+        _this->waitingForDevice = false;
         flog::info("RTLSDRSourceModule '{0}': Menu Deselect!", _this->name);
     }
 
     static void start(void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
         if (_this->running) { return; }
+        _this->waitingForDevice = false;
         if (_this->selectedDevName == "") {
             flog::error("No device selected");
             return;
@@ -322,11 +352,14 @@ private:
         }
         rtlsdr_set_offset_tuning(_this->openDev, _this->offsetTuning);
 
-        _this->asyncCount = (int)roundf(_this->sampleRate / (200 * 512)) * 512;
+        // Bytes per USB transfer, two per sample, a multiple of 512
+        _this->asyncCount = std::max<int>(1, (int)roundf(_this->sampleRate * 2.0 * USB_TRANSFER_SECONDS / 512.0)) * 512;
 
+        _this->deviceLost = false;
+        _this->workerFinished = false;
+        _this->running = true;
         _this->workerThread = std::thread(&RTLSDRSourceModule::worker, _this);
 
-        _this->running = true;
         flog::info("RTLSDRSourceModule '{0}': Start!", _this->name);
     }
 
@@ -335,7 +368,12 @@ private:
         if (!_this->running) { return; }
         _this->running = false;
         _this->stream.stopWriter();
-        rtlsdr_cancel_async(_this->openDev);
+
+        // A cancel before the worker started streaming is ignored by librtlsdr, so repeat it until the worker is done
+        while (!_this->workerFinished) {
+            rtlsdr_cancel_async(_this->openDev);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
         if (_this->workerThread.joinable()) { _this->workerThread.join(); }
         _this->stream.clearWriteStop();
         rtlsdr_close(_this->openDev);
@@ -395,6 +433,13 @@ private:
         }
 
         if (_this->running) { SmGui::EndDisabled(); }
+
+        if (_this->waitingForDevice) {
+            SmGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Device lost, waiting for it to come back...");
+            if (SmGui::Button(CONCAT("Stop Waiting##_rtlsdr_stop_waiting_", _this->name))) {
+                _this->waitingForDevice = false;
+            }
+        }
 
         // Rest of rtlsdr config here
         SmGui::LeftLabel("Direct Sampling");
@@ -525,8 +570,62 @@ private:
     }
 
     void worker() {
+#ifdef __APPLE__
+        // This thread services the USB transfers, if it gets delayed samples are dropped
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
         rtlsdr_reset_buffer(openDev);
-        rtlsdr_read_async(openDev, asyncHandler, this, 0, asyncCount);
+        if (running) {
+            rtlsdr_read_async(openDev, asyncHandler, this, USB_TRANSFER_COUNT, asyncCount);
+        }
+
+        // Returning while still running means the stream died, e.g. the dongle was unplugged or lost power
+        if (running) { deviceLost = true; }
+        workerFinished = true;
+    }
+
+    static void frameEventHandler(bool playing, void* ctx) {
+        RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+
+        if (_this->deviceLost) {
+            _this->deviceLost = false;
+            if (!_this->selected) { return; }
+            flog::warn("RTL-SDR stream died, waiting for the device to come back");
+            _this->waitingForDevice = true;
+            _this->lastReconnectAttempt = std::chrono::steady_clock::now();
+            gui::mainWindow.setPlayState(false);
+            return;
+        }
+
+        if (!_this->waitingForDevice) { return; }
+
+        // The user started something else in the meantime
+        if (!_this->selected || playing) {
+            _this->waitingForDevice = false;
+            return;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - _this->lastReconnectAttempt < std::chrono::seconds(1)) { return; }
+        _this->lastReconnectAttempt = now;
+
+        _this->refresh();
+        int id = _this->findDevice(_this->selectedDevName);
+        if (id < 0) { return; }
+
+        // It can show up before it can be opened, keep waiting until opening works
+        std::string devName = _this->selectedDevName;
+        _this->selectById(id);
+        if (_this->selectedDevName.empty()) {
+            _this->selectedDevName = devName;
+            return;
+        }
+
+        flog::info("RTL-SDR is back, restarting");
+        _this->devId = id;
+        core::setInputSampleRate(_this->sampleRate);
+        _this->waitingForDevice = false;
+        gui::mainWindow.setPlayState(true);
     }
 
     static void asyncHandler(unsigned char* buf, uint32_t len, void* ctx) {
@@ -557,7 +656,18 @@ private:
     dsp::stream<dsp::complex_t> stream;
     double sampleRate;
     SourceManager::SourceHandler handler;
-    bool running = false;
+    std::atomic<bool> running = false;
+
+    // More transfers in flight give more slack when the USB thread is delayed, without adding latency
+    static constexpr int USB_TRANSFER_COUNT = 48;
+    static constexpr double USB_TRANSFER_SECONDS = 0.005;
+
+    EventHandler<bool> frameHandler;
+    std::atomic<bool> deviceLost = false;
+    std::atomic<bool> workerFinished = true;
+    bool waitingForDevice = false;
+    bool selected = false;
+    std::chrono::steady_clock::time_point lastReconnectAttempt;
     double freq;
     std::string selectedDevName = "";
     int devId = 0;

@@ -85,6 +85,7 @@ struct r82xx_priv {
 	uint8_t				input;
 	int				has_lock;
 	int				init_done;
+	int				shadow_unreliable; /* a write failed, don't skip writes anymore */
 
 	/* Store current mode */
 	uint32_t			delsys;

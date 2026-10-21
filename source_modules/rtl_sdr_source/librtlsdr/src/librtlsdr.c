@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #ifndef _WIN32
 #include <unistd.h>
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -119,6 +120,9 @@ struct rtlsdr_dev {
 	int dev_lost;
 	int driver_active;
 	unsigned int xfer_errors;
+	unsigned int xfer_inflight; /* transfers submitted and not yet returned through the callback */
+	int xfer_leaked; /* transfers never returned, libusb may still call back into this device */
+	int i2c_repeater; /* last state written, -1 when unknown */
 	char manufact[256];
 	char product[256];
 	int force_bt;
@@ -577,7 +581,15 @@ void rtlsdr_set_gpio_output(rtlsdr_dev_t *dev, uint8_t gpio)
 
 void rtlsdr_set_i2c_repeater(rtlsdr_dev_t *dev, int on)
 {
-	rtlsdr_demod_write_reg(dev, 1, 0x01, on ? 0x18 : 0x10, 1);
+	/* it is switched on for every tuner access, skip the USB round trip
+	 * when it already is */
+	if (dev->i2c_repeater == on)
+		return;
+
+	if (rtlsdr_demod_write_reg(dev, 1, 0x01, on ? 0x18 : 0x10, 1) < 0)
+		dev->i2c_repeater = -1;
+	else
+		dev->i2c_repeater = on;
 }
 
 int rtlsdr_set_fir(rtlsdr_dev_t *dev)
@@ -629,6 +641,7 @@ void rtlsdr_init_baseband(rtlsdr_dev_t *dev)
 	/* reset demod (bit 3, soft_rst) */
 	rtlsdr_demod_write_reg(dev, 1, 0x01, 0x14, 1);
 	rtlsdr_demod_write_reg(dev, 1, 0x01, 0x10, 1);
+	dev->i2c_repeater = -1;
 
 	/* disable spectrum inversion and adjacent channel rejection */
 	rtlsdr_demod_write_reg(dev, 1, 0x15, 0x00, 1);
@@ -1154,6 +1167,7 @@ int rtlsdr_set_sample_rate(rtlsdr_dev_t *dev, uint32_t samp_rate)
 	/* reset demod (bit 3, soft_rst) */
 	r |= rtlsdr_demod_write_reg(dev, 1, 0x01, 0x14, 1);
 	r |= rtlsdr_demod_write_reg(dev, 1, 0x01, 0x10, 1);
+	dev->i2c_repeater = -1;
 
 	/* recalculate offset frequency if offset tuning is enabled */
 	if (dev->offs_freq)
@@ -1509,6 +1523,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
 		return -ENOMEM;
 
 	memset(dev, 0, sizeof(rtlsdr_dev_t));
+	dev->i2c_repeater = -1;
 	memcpy(dev->fir, fir_default, sizeof(fir_default));
 
 	r = libusb_init(&dev->ctx);
@@ -1737,6 +1752,13 @@ int rtlsdr_close(rtlsdr_dev_t *dev)
 		rtlsdr_deinit_baseband(dev);
 	}
 
+	/* Leaked transfers still point at this device and its libusb context,
+	 * a late callback must not find them freed */
+	if (dev->xfer_leaked) {
+		fprintf(stderr, "Not releasing the device, transfers are still pending\n");
+		return 0;
+	}
+
 	libusb_release_interface(dev->devh, 0);
 
 #ifdef DETACH_KERNEL_DRIVER
@@ -1780,11 +1802,22 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
 {
 	rtlsdr_dev_t *dev = (rtlsdr_dev_t *)xfer->user_data;
 
+	dev->xfer_inflight--;
+
 	if (LIBUSB_TRANSFER_COMPLETED == xfer->status) {
+		/* never resubmit once canceling, the transfers are about to be freed */
+		if (RTLSDR_RUNNING != dev->async_status)
+			return;
+
 		if (dev->cb)
 			dev->cb(xfer->buffer, xfer->actual_length, dev->cb_ctx);
 
-		libusb_submit_transfer(xfer); /* resubmit transfer */
+		/* the callback can block, a cancel may have arrived meanwhile */
+		if (RTLSDR_RUNNING != dev->async_status)
+			return;
+
+		if (libusb_submit_transfer(xfer) == 0) /* resubmit transfer */
+			dev->xfer_inflight++;
 		dev->xfer_errors = 0;
 	} else if (LIBUSB_TRANSFER_CANCELLED != xfer->status) {
 #ifndef _WIN32
@@ -1887,12 +1920,58 @@ static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 	return 0;
 }
 
+/* Cancels whatever is still in flight and waits for it to come back. Freeing a
+ * transfer that is still in flight crashes, e.g. in the macOS libusb backend
+ * when the device was unplugged or lost power. */
+static double _rtlsdr_now(void)
+{
+#ifdef _WIN32
+	return GetTickCount64() / 1000.0;
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec + ts.tv_nsec / 1e9;
+#endif
+}
+
+static void _rtlsdr_drain_transfers(rtlsdr_dev_t *dev)
+{
+	unsigned int i;
+	struct timeval tv = { 0, 100000 };
+	double deadline = _rtlsdr_now() + 2.0;
+
+	/* stops the callback from resubmitting */
+	dev->async_status = RTLSDR_CANCELING;
+
+	if (!dev->xfer)
+		return;
+
+	for (i = 0; i < dev->xfer_buf_num; ++i) {
+		if (dev->xfer[i])
+			libusb_cancel_transfer(dev->xfer[i]);
+	}
+
+	while (dev->xfer_inflight > 0 && _rtlsdr_now() < deadline)
+		libusb_handle_events_timeout_completed(dev->ctx, &tv, NULL);
+}
+
 static int _rtlsdr_free_async_buffers(rtlsdr_dev_t *dev)
 {
 	unsigned int i;
 
 	if (!dev)
 		return -1;
+
+	/* Leaking is better than freeing transfers that libusb still uses */
+	if (dev->xfer_inflight > 0) {
+		fprintf(stderr, "%u transfers did not return, leaking them\n",
+			dev->xfer_inflight);
+		dev->xfer = NULL;
+		dev->xfer_buf = NULL;
+		dev->xfer_inflight = 0;
+		dev->xfer_leaked = 1;
+		return -1;
+	}
 
 	if (dev->xfer) {
 		for(i = 0; i < dev->xfer_buf_num; ++i) {
@@ -1933,8 +2012,6 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	unsigned int i;
 	int r = 0;
 	struct timeval tv = { 1, 0 };
-	struct timeval zerotv = { 0, 0 };
-	enum rtlsdr_async_status next_status = RTLSDR_INACTIVE;
 
 	if (!dev)
 		return -1;
@@ -1959,6 +2036,7 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 		dev->xfer_buf_len = DEFAULT_BUF_LENGTH;
 
 	_rtlsdr_alloc_async_buffers(dev);
+	dev->xfer_inflight = 0;
 
 	for(i = 0; i < dev->xfer_buf_num; ++i) {
 		libusb_fill_bulk_transfer(dev->xfer[i],
@@ -1981,9 +2059,10 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 			dev->async_status = RTLSDR_CANCELING;
 			break;
 		}
+		dev->xfer_inflight++;
 	}
 
-	while (RTLSDR_INACTIVE != dev->async_status) {
+	while (RTLSDR_RUNNING == dev->async_status) {
 		r = libusb_handle_events_timeout_completed(dev->ctx, &tv,
 							   &dev->async_cancel);
 		if (r < 0) {
@@ -1993,48 +2072,20 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 			break;
 		}
 
-		if (RTLSDR_CANCELING == dev->async_status) {
-			next_status = RTLSDR_INACTIVE;
-
-			if (!dev->xfer)
-				break;
-
-			for(i = 0; i < dev->xfer_buf_num; ++i) {
-				if (!dev->xfer[i])
-					continue;
-
-				if (LIBUSB_TRANSFER_CANCELLED !=
-						dev->xfer[i]->status) {
-					r = libusb_cancel_transfer(dev->xfer[i]);
-					/* handle events after canceling
-					 * to allow transfer status to
-					 * propagate */
-#ifdef _WIN32
-					Sleep(1);
-#endif
-					libusb_handle_events_timeout_completed(dev->ctx,
-									       &zerotv, NULL);
-					if (r < 0)
-						continue;
-
-					next_status = RTLSDR_CANCELING;
-				}
-			}
-
-			if (dev->dev_lost || RTLSDR_INACTIVE == next_status) {
-				/* handle any events that still need to
-				 * be handled before exiting after we
-				 * just cancelled all transfers */
-				libusb_handle_events_timeout_completed(dev->ctx,
-								       &zerotv, NULL);
-				break;
-			}
+		/* every transfer failed and none was resubmitted, the stream is dead */
+		if (dev->xfer_inflight == 0) {
+			dev->dev_lost = 1;
+			break;
 		}
 	}
 
+	_rtlsdr_drain_transfers(dev);
 	_rtlsdr_free_async_buffers(dev);
 
-	dev->async_status = next_status;
+	dev->async_status = RTLSDR_INACTIVE;
+
+	if (dev->dev_lost)
+		return -1;
 
 	return r;
 }
