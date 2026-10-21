@@ -52,6 +52,7 @@ public:
 
         squelchModes.define("off", "Off", SQUELCH_MODE_OFF);
         squelchModes.define("power", "Power", SQUELCH_MODE_POWER);
+        squelchModes.define("auto", "Auto", SQUELCH_MODE_AUTO);
         //squelchModes.define("snr", "SNR", SQUELCH_MODE_SNR);
         squelchModes.define("ctcss_mute", "CTCSS (Mute)", SQUELCH_MODE_CTCSS_MUTE);
         squelchModes.define("ctcss_decode", "CTCSS (Decode Only)", SQUELCH_MODE_CTCSS_DECODE);
@@ -271,6 +272,22 @@ private:
                 }
                 break;
 
+            case SQUELCH_MODE_AUTO:
+                ImGui::LeftLabel("Margin");
+                ImGui::FillWidth();
+                if (ImGui::SliderFloat(("##_radio_sqelch_margin_" + _this->name).c_str(), &_this->squelchMargin, _this->MIN_SQUELCH_MARGIN, _this->MAX_SQUELCH_MARGIN, "%.1fdB above noise")) {
+                    _this->setSquelchMargin(_this->squelchMargin);
+                }
+                ImGui::Text("Noise floor: %.1fdB, Level: %.1fdB", _this->powerSquelch.getNoiseFloor(), _this->powerSquelch.getLevel());
+                ImGui::SameLine();
+                if (_this->powerSquelch.isOpen()) {
+                    ImGui::TextColored(ImVec4(0, 1, 0, 1), "Open");
+                }
+                else {
+                    ImGui::TextDisabled("Closed");
+                }
+                break;
+
             case SQUELCH_MODE_CTCSS_MUTE:
                 if (_this->squelchModes[_this->squelchModeId] == SQUELCH_MODE_CTCSS_MUTE) {
                     ImGui::LeftLabel("CTCSS Tone");
@@ -444,6 +461,7 @@ private:
         deempId = deempModes.valueId((DeemphasisMode)selectedDemod->getDefaultDeemphasisMode());
         squelchModeId = squelchModes.valueId(SQUELCH_MODE_OFF);
         squelchLevel = MIN_SQUELCH;
+        squelchMargin = DEFAULT_SQUELCH_MARGIN;
         ctcssToneId = ctcssTones.valueId(dsp::noise_reduction::CTCSS_TONE_67Hz);
         highPass = false;
 
@@ -474,6 +492,9 @@ private:
         }
         if (config.conf[name][selectedDemod->getName()].contains("squelchLevel")) {
             squelchLevel = config.conf[name][selectedDemod->getName()]["squelchLevel"];
+        }
+        if (config.conf[name][selectedDemod->getName()].contains("squelchMargin")) {
+            squelchMargin = config.conf[name][selectedDemod->getName()]["squelchMargin"];
         }
         if (config.conf[name][selectedDemod->getName()].contains("ctcssTone")) {
             int ctcssToneX10 = config.conf[name][selectedDemod->getName()]["ctcssTone"];
@@ -532,6 +553,8 @@ private:
         setFMIFNREnabled(FMIFNRAllowed ? FMIFNREnabled : false);
 
         // Configure squelch
+        powerSquelch.setSamplerate(ifSamplerate);
+        setSquelchMargin(squelchMargin);
         setSquelchMode(squelchAllowed ? squelchModes[squelchModeId] : SQUELCH_MODE_OFF);
         setSquelchLevel(squelchLevel);
         setCTCSSTone(ctcssTones[ctcssToneId]);
@@ -668,7 +691,14 @@ private:
             break;
 
         case SQUELCH_MODE_POWER:
-            // Enable the power squelch block
+            // Enable the power squelch block with a fixed level
+            powerSquelch.setAuto(false);
+            ifChain.enableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
+            break;
+
+        case SQUELCH_MODE_AUTO:
+            // Enable the power squelch block with a level following the noise floor
+            powerSquelch.setAuto(true);
             ifChain.enableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
             break;
 
@@ -711,6 +741,17 @@ private:
         // Save config
         config.acquire();
         config.conf[name][selectedDemod->getName()]["squelchLevel"] = squelchLevel;
+        config.release(true);
+    }
+
+    void setSquelchMargin(float margin) {
+        squelchMargin = std::clamp<float>(margin, MIN_SQUELCH_MARGIN, MAX_SQUELCH_MARGIN);
+        powerSquelch.setAutoMargin(squelchMargin);
+        if (!selectedDemod) { return; }
+
+        // Save config
+        config.acquire();
+        config.conf[name][selectedDemod->getName()]["squelchMargin"] = squelchMargin;
         config.release(true);
     }
 
@@ -884,6 +925,7 @@ private:
 
     int squelchModeId = 0;
     float squelchLevel;
+    float squelchMargin;
     int ctcssToneId = 0;
     bool squelchAllowed = false;
 
@@ -909,6 +951,9 @@ private:
     const double MAX_NB = 10.0;
     const double MIN_SQUELCH = -100.0;
     const double MAX_SQUELCH = 0.0;
+    const float DEFAULT_SQUELCH_MARGIN = 3.0f;
+    const float MIN_SQUELCH_MARGIN = 0.5f;
+    const float MAX_SQUELCH_MARGIN = 20.0f;
 
     bool enabled = true;
 };

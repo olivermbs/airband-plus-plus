@@ -1,5 +1,7 @@
 #pragma once
 #include "../processor.h"
+#include "noise_floor_tracker.h"
+#include <atomic>
 
 // TODO: Rewrite better!!!!!
 namespace dsp::noise_reduction {
@@ -30,6 +32,30 @@ namespace dsp::noise_reduction {
             _level = level;
         }
 
+        void setSamplerate(double samplerate) {
+            assert(base_type::_block_init);
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            _samplerate = samplerate;
+        }
+
+        // Automatic mode: the threshold follows the noise floor instead of the fixed level
+        void setAuto(bool enabled) {
+            assert(base_type::_block_init);
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            if (enabled && !_auto) { tracker.reset(); }
+            _auto = enabled;
+        }
+
+        void setAutoMargin(double margin) {
+            assert(base_type::_block_init);
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            tracker.setMargin(margin);
+        }
+
+        float getLevel() { return _lastLevel; }
+        float getNoiseFloor() { return _noiseFloor; }
+        bool isOpen() { return _open; }
+
         inline int process(int count, const complex_t* in, complex_t* out) {
             // Compute the amplitude of each sample
             volk_32fc_magnitude_32f(normBuffer, (lv_32fc_t*)in, count);
@@ -39,7 +65,21 @@ namespace dsp::noise_reduction {
             volk_32f_accumulator_s32f(&sum, normBuffer, count);
             sum /= (float)count;
 
-            if (10.0f * log10f(sum) >= _level) {
+            float level = 10.0f * log10f(sum);
+            bool open;
+            std::unique_lock<std::mutex> lck(trackerMtx);
+            if (_auto) {
+                open = tracker.update(level, (double)count / _samplerate);
+                _noiseFloor = tracker.getNoiseFloor();
+            }
+            else {
+                open = level >= _level;
+            }
+            lck.unlock();
+            _lastLevel = level;
+            _open = open;
+
+            if (open) {
                 memcpy(out, in, count * sizeof(complex_t));
             }
             else {
@@ -61,6 +101,13 @@ namespace dsp::noise_reduction {
     private:
         float* normBuffer;
         float _level = -50.0f;
+        double _samplerate = 50000.0;
+        bool _auto = false;
+        std::mutex trackerMtx;
+        NoiseFloorTracker tracker;
+        std::atomic<float> _lastLevel = -INFINITY;
+        std::atomic<float> _noiseFloor = -INFINITY;
+        std::atomic<bool> _open = false;
                 
     };
 }

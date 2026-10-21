@@ -72,6 +72,7 @@ option(OPT_BUILD_SCHEDULER "Build the scheduler" OFF)
 option(USE_INTERNAL_LIBCORRECT "Use an internal version of libcorrect" ON)
 option(USE_BUNDLE_DEFAULTS "Set the default resource and module directories to the right ones for a MacOS .app" OFF)
 option(COPY_MSVC_REDISTRIBUTABLES "Copy over the Visual C++ Redistributable" OFF)
+option(OPT_BUILD_TESTS "Build the unit tests (squelch and scanner logic)" OFF)
 
 # Module cmake path
 set(SDRPP_MODULE_CMAKE "${CMAKE_SOURCE_DIR}/sdrpp_module.cmake")
@@ -341,6 +342,11 @@ endif (OPT_BUILD_SCANNER)
 if (OPT_BUILD_SCHEDULER)
 add_subdirectory("misc_modules/scheduler")
 endif (OPT_BUILD_SCHEDULER)
+
+if (OPT_BUILD_TESTS)
+enable_testing()
+add_subdirectory("tests")
+endif (OPT_BUILD_TESTS)
 
 if (MSVC)
     add_executable(sdrpp "src/main.cpp" "win32/resources.rc")
