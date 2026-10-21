@@ -124,6 +124,7 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["fastFFT"] = false;
     defConfig["fftHeight"] = 300;
     defConfig["fftRate"] = 20;
+    defConfig["uiFrameRateLimit"] = 60;
     defConfig["fftSize"] = 65536;
     defConfig["fftWindow"] = 2;
     defConfig["frequency"] = 100000000.0;

@@ -157,6 +157,10 @@ namespace backend {
         ImGui::NewFrame();
     }
 
+    void setFrameRateLimit(int fps) {
+        // The display drives the frame rate on Android
+    }
+
     void render(bool vsync) {
         // Rendering
         ImGui::Render();

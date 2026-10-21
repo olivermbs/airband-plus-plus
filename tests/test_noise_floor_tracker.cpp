@@ -118,4 +118,25 @@ TEST(closes_with_margin_below_hysteresis) {
     CHECK(!t.isOpen());
 }
 
+TEST(learns_real_noise_after_silent_startup) {
+    // Before samples flow the IF is almost silent, then the real noise arrives
+    std::mt19937 rng(9);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    feed(t, -129.0f, 0.5, rng);
+    feed(t, -50.0f, 2.0, rng);
+    CHECK(!t.isOpen());
+    CHECK_NEAR(t.getNoiseFloor(), -50.0f, 1.0f);
+}
+
+TEST(catches_up_quickly_once_stuck_open) {
+    std::mt19937 rng(10);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    feed(t, -50.0f, 5.0, rng);
+    // A 30dB jump of the noise, e.g. an LNA switched on
+    feed(t, -20.0f, 40.0, rng);
+    CHECK(!t.isOpen());
+}
+
 int main() { return runTests(); }

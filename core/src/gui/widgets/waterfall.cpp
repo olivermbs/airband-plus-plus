@@ -211,8 +211,11 @@ namespace ImGui {
             updateWaterfallTexture();
         }
         {
+            // The texture is a ring like rawFFTs, the newest line is at currentFFTLine. Texture
+            // coordinates wrap around (GL_REPEAT), so it is drawn starting from that line.
             std::lock_guard<std::mutex> lck(texMtx);
-            window->DrawList->AddImage((void*)(intptr_t)textureId, wfMin, wfMax);
+            float top = (waterfallHeight > 0) ? (float)currentFFTLine / (float)waterfallHeight : 0.0f;
+            window->DrawList->AddImage((void*)(intptr_t)textureId, wfMin, wfMax, ImVec2(0.0f, top), ImVec2(1.0f, top + 1.0f));
         }
         
         ImVec2 mPos = ImGui::GetMousePos();
@@ -615,20 +618,23 @@ namespace ImGui {
             for (int i = 0; i < count; i++) {
                 drawDataSize = (viewBandwidth / wholeBandwidth) * rawFFTSize;
                 drawDataStart = (((double)rawFFTSize / 2.0) * (offsetRatio + 1)) - (drawDataSize / 2);
-                doZoom(drawDataStart, drawDataSize, rawFFTSize, dataWidth, &rawFFTs[((i + currentFFTLine) % waterfallHeight) * rawFFTSize], tempData);
+                int row = (i + currentFFTLine) % waterfallHeight;
+                doZoom(drawDataStart, drawDataSize, rawFFTSize, dataWidth, &rawFFTs[row * rawFFTSize], tempData);
                 for (int j = 0; j < dataWidth; j++) {
                     pixel = (std::clamp<float>(tempData[j], waterfallMin, waterfallMax) - waterfallMin) / dataRange;
-                    waterfallFb[(i * dataWidth) + j] = waterfallPallet[(int)(pixel * (WATERFALL_RESOLUTION - 1))];
+                    waterfallFb[(row * dataWidth) + j] = waterfallPallet[(int)(pixel * (WATERFALL_RESOLUTION - 1))];
                 }
             }
 
             for (int i = count; i < waterfallHeight; i++) {
+                int row = (i + currentFFTLine) % waterfallHeight;
                 for (int j = 0; j < dataWidth; j++) {
-                    waterfallFb[(i * dataWidth) + j] = (uint32_t)255 << 24;
+                    waterfallFb[(row * dataWidth) + j] = (uint32_t)255 << 24;
                 }
             }
         }
         delete[] tempData;
+        waterfallFullUpdate = true;
         waterfallUpdate = true;
     }
 
@@ -706,10 +712,31 @@ namespace ImGui {
     void WaterFall::updateWaterfallTexture() {
         std::lock_guard<std::mutex> lck(texMtx);
         glBindTexture(GL_TEXTURE_2D, textureId);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, dataWidth, waterfallHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, (uint8_t*)waterfallFb);
+
+        // Re-uploading the whole texture makes the GPU driver convert all of it on the CPU, so
+        // only the lines added since the last upload are sent, unless everything changed
+        bool sizeChanged = (texWidth != dataWidth || texHeight != waterfallHeight);
+        if (sizeChanged || waterfallFullUpdate || newWaterfallLines >= waterfallHeight) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, dataWidth, waterfallHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, (uint8_t*)waterfallFb);
+            texWidth = dataWidth;
+            texHeight = waterfallHeight;
+        }
+        else if (newWaterfallLines > 0) {
+            // New lines go upwards from currentFFTLine, wrapping at the end of the ring
+            int first = currentFFTLine;
+            int count = std::min<int>(newWaterfallLines, waterfallHeight - first);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, first, dataWidth, count, GL_RGBA, GL_UNSIGNED_BYTE, (uint8_t*)&waterfallFb[first * dataWidth]);
+            if (count < newWaterfallLines) {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, dataWidth, newWaterfallLines - count, GL_RGBA, GL_UNSIGNED_BYTE, (uint8_t*)waterfallFb);
+            }
+        }
+
+        waterfallFullUpdate = false;
+        newWaterfallLines = 0;
     }
 
     void WaterFall::onPositionChange() {
@@ -903,14 +930,16 @@ namespace ImGui {
 
         if (waterfallVisible) {
             doZoom(drawDataStart, drawDataSize, rawFFTSize, dataWidth, &rawFFTs[currentFFTLine * rawFFTSize], latestFFT);
-            memmove(&waterfallFb[dataWidth], waterfallFb, dataWidth * (waterfallHeight - 1) * sizeof(uint32_t));
+            // Same ring layout as rawFFTs, no need to shift the whole image down
+            uint32_t* line = &waterfallFb[currentFFTLine * dataWidth];
             float pixel;
             float dataRange = waterfallMax - waterfallMin;
             for (int j = 0; j < dataWidth; j++) {
                 pixel = (std::clamp<float>(latestFFT[j], waterfallMin, waterfallMax) - waterfallMin) / dataRange;
                 int id = (int)(pixel * (WATERFALL_RESOLUTION - 1));
-                waterfallFb[j] = waterfallPallet[id];
+                line[j] = waterfallPallet[id];
             }
+            newWaterfallLines++;
             waterfallUpdate = true;
         }
         else {

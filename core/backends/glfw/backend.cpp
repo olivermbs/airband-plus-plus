@@ -11,8 +11,13 @@
 #include <stb_image.h>
 #include <stb_image_resize.h>
 #include <gui/gui.h>
+#include <chrono>
+#include <thread>
 
 namespace backend {
+    int frameRateLimit = 0;
+    std::chrono::steady_clock::time_point nextFrame;
+
     const char* OPENGL_VERSIONS_GLSL[] = {
         "#version 120",
         "#version 300 es",
@@ -220,6 +225,21 @@ namespace backend {
 
         glfwSwapInterval(vsync);
         glfwSwapBuffers(window);
+
+        // High refresh rate displays would otherwise redraw everything at 120Hz or more,
+        // while the spectrum only changes at the FFT rate
+        if (frameRateLimit <= 0) { return; }
+        auto now = std::chrono::steady_clock::now();
+        nextFrame += std::chrono::nanoseconds(1000000000 / frameRateLimit);
+        if (nextFrame < now) {
+            nextFrame = now;
+            return;
+        }
+        std::this_thread::sleep_until(nextFrame);
+    }
+
+    void setFrameRateLimit(int fps) {
+        frameRateLimit = fps;
     }
 
     void getMouseScreenPos(double& x, double& y) {

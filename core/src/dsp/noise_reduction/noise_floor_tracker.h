@@ -24,7 +24,8 @@ namespace dsp::noise_reduction {
         }
 
         bool update(float level, double duration) {
-            if (!std::isfinite(level)) { return _open; }
+            // No samples flowing yet (e.g. right after starting), nothing to learn from
+            if (!std::isfinite(level) || level < MIN_LEVEL) { return _open; }
             _level = level;
 
             if (!_initialized) {
@@ -50,8 +51,13 @@ namespace dsp::noise_reduction {
                 return _open;
             }
 
-            float riseRate = RISE_RATE;
-            if (_open) { riseRate = (_openTime < LONG_OPEN_TIME) ? OPEN_RISE_RATE : STUCK_RISE_RATE; }
+            // Open for longer than any transmission: the noise itself went up, converge quickly
+            if (_open && _openTime >= LONG_OPEN_TIME) {
+                _floor += (level - _floor) * std::min<double>(1.0, duration / STUCK_TIME_CONSTANT);
+                return _open;
+            }
+
+            float riseRate = _open ? OPEN_RISE_RATE : RISE_RATE;
             _floor = std::min<float>(level, _floor + riseRate * duration);
             return _open;
         }
@@ -66,8 +72,9 @@ namespace dsp::noise_reduction {
         static constexpr float FALL_RATE = 10.0f;
         static constexpr float RISE_RATE = 2.5f;
         static constexpr float OPEN_RISE_RATE = 0.05f;
-        static constexpr float STUCK_RISE_RATE = 1.0f;
         static constexpr double LONG_OPEN_TIME = 30.0;
+        static constexpr double STUCK_TIME_CONSTANT = 3.0;
+        static constexpr float MIN_LEVEL = -120.0f;
 
         float _margin = 3.0f;
         float _hysteresis = 1.0f;

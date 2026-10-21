@@ -8,6 +8,7 @@
 #include <signal_path/signal_path.h>
 #include <gui/style.h>
 #include <utils/optionlist.h>
+#include <backend.h>
 #include <algorithm>
 
 namespace displaymenu {
@@ -19,6 +20,8 @@ namespace displaymenu {
     std::string colorMapAuthor = "";
     int selectedWindow = 0;
     int fftRate = 20;
+    int uiFrameRateId = 0;
+    OptionList<int, int> uiFrameRates;
     int fftSizeId = 0;
     int uiScaleId = 0;
     bool restartRequired = false;
@@ -77,6 +80,14 @@ namespace displaymenu {
 
         fullWaterfallUpdate = core::configManager.conf["fullWaterfallUpdate"];
         gui::waterfall.setFullWaterfallUpdate(fullWaterfallUpdate);
+
+        uiFrameRates.define(30, "30 FPS", 30);
+        uiFrameRates.define(60, "60 FPS", 60);
+        uiFrameRates.define(120, "120 FPS", 120);
+        uiFrameRates.define(0, "Unlimited", 0);
+        int uiFrameRate = core::configManager.conf.contains("uiFrameRateLimit") ? (int)core::configManager.conf["uiFrameRateLimit"] : 60;
+        uiFrameRateId = uiFrameRates.keyExists(uiFrameRate) ? uiFrameRates.keyId(uiFrameRate) : uiFrameRates.keyId(60);
+        backend::setFrameRateLimit(uiFrameRates.value(uiFrameRateId));
 
         fftSizeId = fftSizes.valueId(65536);
         int size = core::configManager.conf["fftSize"];
@@ -199,6 +210,15 @@ namespace displaymenu {
             core::configManager.conf["uiScale"] = uiScales[uiScaleId];
             core::configManager.release(true);
             restartRequired = true;
+        }
+
+        ImGui::LeftLabel("UI Framerate");
+        ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
+        if (ImGui::Combo("##sdrpp_ui_fps", &uiFrameRateId, uiFrameRates.txt)) {
+            backend::setFrameRateLimit(uiFrameRates.value(uiFrameRateId));
+            core::configManager.acquire();
+            core::configManager.conf["uiFrameRateLimit"] = uiFrameRates.key(uiFrameRateId);
+            core::configManager.release(true);
         }
 
         ImGui::LeftLabel("FFT Framerate");

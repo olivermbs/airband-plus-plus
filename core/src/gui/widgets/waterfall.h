@@ -298,6 +298,10 @@ namespace ImGui {
         int fftLines = 0;
 
         uint32_t* waterfallFb;
+        int texWidth = 0;
+        int texHeight = 0;
+        int newWaterfallLines = 0;
+        bool waterfallFullUpdate = true;
 
         bool draggingFW = false;
         int FFTAreaHeight;
