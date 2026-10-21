@@ -9,6 +9,7 @@
 #include <radio_interface.h>
 #include <utils/flog.h>
 #include <chrono>
+#include <fstream>
 #include <map>
 #include <set>
 #include "channel_scan.h"
@@ -17,7 +18,7 @@ SDRPP_MOD_INFO{
     /* Name:            */ "scanner",
     /* Description:     */ "Frequency scanner for SDR++",
     /* Author:          */ "Ryzerth;olivermbs",
-    /* Version:         */ 0, 3, 0,
+    /* Version:         */ 0, 4, 0,
     /* Max instances    */ 1
 };
 
@@ -32,6 +33,7 @@ public:
     ScannerModule(std::string name) {
         this->name = name;
         loadConfig();
+        refreshBookmarkLists();
         gui::menu.registerEntry(name, menuHandler, this, NULL);
 
         frameHandler.handler = frameEventHandler;
@@ -40,6 +42,7 @@ public:
     }
 
     ~ScannerModule() {
+        stop("");
         gui::mainWindow.onFrame.unbindHandler(&frameHandler);
         gui::menu.removeEntry(name);
     }
@@ -84,21 +87,43 @@ private:
         }
         ImGui::EndTable();
 
-        ImGui::LeftLabel("Start (MHz)");
+        ImGui::LeftLabel("Scan");
         ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
-        double startMHz = _this->startFreq / 1e6;
-        if (ImGui::InputDouble(("##start_freq_scanner_" + _this->name).c_str(), &startMHz, 0.025, 1.0, "%.5f")) {
-            _this->startFreq = std::round(startMHz * 1e6);
+        if (ImGui::Combo(("##scanner_mode_" + _this->name).c_str(), &_this->mode, "Frequency Range\0Bookmarks\0")) {
             changed = true;
         }
-        ImGui::LeftLabel("Stop (MHz)");
-        ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
-        double stopMHz = _this->stopFreq / 1e6;
-        if (ImGui::InputDouble(("##stop_freq_scanner_" + _this->name).c_str(), &stopMHz, 0.025, 1.0, "%.5f")) {
-            _this->stopFreq = std::round(stopMHz * 1e6);
-            changed = true;
+
+        if (_this->mode == MODE_BOOKMARKS) {
+            ImGui::LeftLabel("List");
+            float refreshWidth = ImGui::CalcTextSize("Refresh").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX() - refreshWidth - ImGui::GetStyle().ItemSpacing.x);
+            if (ImGui::Combo(("##scanner_bm_list_" + _this->name).c_str(), &_this->bookmarkListId, _this->bookmarkListsTxt.c_str())) {
+                _this->bookmarkList = _this->bookmarkLists[_this->bookmarkListId];
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(("Refresh##scanner_bm_refresh_" + _this->name).c_str())) {
+                _this->refreshBookmarkLists();
+            }
         }
-        ImGui::LeftLabel("Step (kHz)");
+
+        if (_this->mode == MODE_RANGE) {
+            ImGui::LeftLabel("Start (MHz)");
+            ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
+            double startMHz = _this->startFreq / 1e6;
+            if (ImGui::InputDouble(("##start_freq_scanner_" + _this->name).c_str(), &startMHz, 0.025, 1.0, "%.5f")) {
+                _this->startFreq = std::round(startMHz * 1e6);
+                changed = true;
+            }
+            ImGui::LeftLabel("Stop (MHz)");
+            ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
+            double stopMHz = _this->stopFreq / 1e6;
+            if (ImGui::InputDouble(("##stop_freq_scanner_" + _this->name).c_str(), &stopMHz, 0.025, 1.0, "%.5f")) {
+                _this->stopFreq = std::round(stopMHz * 1e6);
+                changed = true;
+            }
+        }
+        ImGui::LeftLabel(_this->mode == MODE_RANGE ? "Step (kHz)" : "Spacing (kHz)");
         ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
         double stepKHz = _this->step / 1e3;
         if (ImGui::InputDouble(("##step_scanner_" + _this->name).c_str(), &stepKHz, 0.0, 0.0, "%.3f")) {
@@ -170,12 +195,12 @@ private:
         }
 
         _this->drawWarnings();
-        _this->drawLockouts();
+        _this->drawExclusions();
     }
 
     void drawStatus() {
         if (state == State::Receiving) {
-            double freq = grid.freq(receivingChannel);
+            double freq = channels[receivingChannel];
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "Receiving %.5f MHz", freq / 1e6);
             ImGui::Text("SNR %.1f dB, carrier %+.2f kHz", receivingSNR, (vfoFreq - freq) / 1e3);
 
@@ -204,6 +229,9 @@ private:
         }
 
         ImGui::TextColored(ImVec4(1, 1, 0, 1), "Scanning window %d/%d", windowId + 1, (int)windows.size());
+        if (lastSweepSeconds > 0.0) {
+            ImGui::Text("%d channels, full sweep %.2f s", (int)channels.size(), lastSweepSeconds);
+        }
     }
 
     void drawWarnings() {
@@ -220,10 +248,18 @@ private:
         }
     }
 
-    void drawLockouts() {
-        if (lockouts.empty()) { return; }
+    void drawExclusions() {
+        std::string header = "Excluded (" + std::to_string(lockouts.size()) + ")##scanner_lockouts_" + name;
+        if (!ImGui::CollapsingHeader(header.c_str())) { return; }
 
-        if (!ImGui::CollapsingHeader(("Locked out (" + std::to_string(lockouts.size()) + ")##scanner_lockouts_" + name).c_str())) { return; }
+        float addWidth = ImGui::CalcTextSize("Exclude").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - addWidth - ImGui::GetStyle().ItemSpacing.x);
+        ImGui::InputDouble(("##scanner_exclude_freq_" + name).c_str(), &excludeMHz, 0.0, 0.0, "%.5f MHz");
+        ImGui::SameLine();
+        if (ImGui::Button(("Exclude##scanner_exclude_" + name).c_str())) {
+            lockouts.insert(std::llround(excludeMHz * 1e6));
+            saveConfig();
+        }
 
         long long removed = -1;
         for (long long freq : lockouts) {
@@ -239,10 +275,46 @@ private:
             saveConfig();
         }
 
-        if (ImGui::Button(("Clear All##scanner_clear_lockouts_" + name).c_str())) {
+        if (!lockouts.empty() && ImGui::Button(("Clear All##scanner_clear_lockouts_" + name).c_str())) {
             lockouts.clear();
             saveConfig();
         }
+    }
+
+    // Lists of the frequency manager, read from its config file
+    void refreshBookmarkLists() {
+        bookmarkLists.clear();
+        bookmarkListsTxt.clear();
+        json fm = readFrequencyManagerConfig();
+        if (fm.contains("lists") && fm["lists"].is_object()) {
+            for (auto& [listName, list] : fm["lists"].items()) {
+                bookmarkLists.push_back(listName);
+                bookmarkListsTxt += listName;
+                bookmarkListsTxt += '\0';
+            }
+        }
+
+        auto it = std::find(bookmarkLists.begin(), bookmarkLists.end(), bookmarkList);
+        bookmarkListId = (it == bookmarkLists.end()) ? 0 : (int)(it - bookmarkLists.begin());
+        if (!bookmarkLists.empty()) { bookmarkList = bookmarkLists[bookmarkListId]; }
+    }
+
+    static json readFrequencyManagerConfig() {
+        std::ifstream file(core::args["root"].s() + "/frequency_manager_config.json");
+        json fm = json::parse(file, nullptr, false);
+        return fm.is_discarded() ? json::object() : fm;
+    }
+
+    std::vector<double> bookmarkChannels() {
+        std::vector<double> freqs;
+        json fm = readFrequencyManagerConfig();
+        if (!fm.contains("lists") || !fm["lists"].contains(bookmarkList)) { return freqs; }
+        json& bookmarks = fm["lists"][bookmarkList]["bookmarks"];
+        if (!bookmarks.is_object()) { return freqs; }
+        for (auto& [bmName, bm] : bookmarks.items()) {
+            if (bm.contains("frequency")) { freqs.push_back(bm["frequency"]); }
+        }
+        return freqs;
     }
 
     void applyAirbandPreset(double presetStep) {
@@ -281,19 +353,35 @@ private:
             return;
         }
 
-        grid = { startFreq, stopFreq, step };
-        if (grid.count() == 0) {
-            error = "Invalid frequency range";
+        // Excluded channels are left out of the plan, so no time is spent on them
+        std::vector<double> all = (mode == MODE_RANGE) ? scan::gridChannels({ startFreq, stopFreq, step }) : bookmarkChannels();
+        std::sort(all.begin(), all.end());
+        all.erase(std::unique(all.begin(), all.end()), all.end());
+        channels.clear();
+        for (double freq : all) {
+            if (!lockouts.count(std::llround(freq))) { channels.push_back(freq); }
+        }
+        if (channels.empty()) {
+            error = (mode == MODE_RANGE) ? "Invalid frequency range" : "No bookmarks in this list";
             return;
         }
 
+        // A faster FFT shortens every wait while scanning
+        core::configManager.acquire();
+        userFFTRate = core::configManager.conf["fftRate"];
+        core::configManager.release();
+        if (userFFTRate < SCAN_FFT_RATE) { sigpath::iqFrontEnd.setFFTRate(SCAN_FFT_RATE); }
+
         plannedBandwidth = 0.0;
         windowId = scanUp ? -1 : 0;
+        sweepStart = Clock::now();
+        lastSweepSeconds = 0.0;
         running = true;
         nextWindow();
     }
 
     void stop(const std::string& reason) {
+        if (running && userFFTRate < SCAN_FFT_RATE) { sigpath::iqFrontEnd.setFFTRate(userFFTRate); }
         running = false;
         error = reason;
     }
@@ -367,7 +455,7 @@ private:
         int count = window.last - window.first + 1;
         std::vector<float> snr(count);
         for (int i = 0; i < count; i++) {
-            snr[i] = isSkipped(grid.freq(window.first + i), now) ? -INFINITY : channelSNR(window.first + i);
+            snr[i] = isSkipped(channels[window.first + i], now) ? -INFINITY : channelSNR(window.first + i);
             hits[i] = (snr[i] >= trigger) ? hits[i] + 1 : 0;
         }
 
@@ -380,7 +468,7 @@ private:
 
         // Name the channel after where the carrier actually is
         double center = carrierCenter(window.first + picked);
-        int channel = std::clamp<int>(grid.indexOf(center), window.first, window.last);
+        int channel = std::clamp<int>(scan::nearestChannel(channels, center), window.first, window.last);
         listen(channel, snr[picked], center, now);
     }
 
@@ -395,15 +483,24 @@ private:
         receivingSNR = channelSNR(receivingChannel);
         if (receivingSNR >= trigger - RECEIVE_HYSTERESIS) {
             lastSignal = now;
+            confirmedAfterListen = true;
         }
         if (hold) { return; }
+
+        // Nothing in the frames after locking on: it was a noise spike or a stale frame from before
+        // the retune, don't wait for the linger time
+        framesSinceListen++;
+        if (!confirmedAfterListen && framesSinceListen >= VERIFY_FRAMES) {
+            resumeSearching();
+            return;
+        }
 
         if (receivingSNR >= trigger) {
             followCarrier(carrierCenter(receivingChannel));
         }
 
         if (maxListenTime > 0 && now - receiveStart > std::chrono::seconds(maxListenTime)) {
-            tempSkips[std::llround(grid.freq(receivingChannel))] = now + std::chrono::seconds(SKIP_TIME_S);
+            tempSkips[std::llround(channels[receivingChannel])] = now + std::chrono::seconds(SKIP_TIME_S);
             resumeSearching();
             return;
         }
@@ -422,7 +519,7 @@ private:
     }
 
     float channelSNR(int channel) {
-        double freq = grid.freq(channel);
+        double freq = channels[channel];
         float peak = scan::channelPeak(detectionSpectrum, freq, detectionHalfWidth(), dcGuard());
         float floor = scan::noiseFloor(detectionSpectrum, freq, FLOOR_RADIUS, detectionHalfWidth(), dcGuard(), FLOOR_QUANTILE);
         return peak - floor;
@@ -430,7 +527,7 @@ private:
 
     // Centered on the full resolution FFT, a carrier is located to within a few Hz
     double carrierCenter(int channel) {
-        return scan::signalCenter(fineSpectrum, grid.freq(channel), detectionHalfWidth(), dcGuard());
+        return scan::signalCenter(fineSpectrum, channels[channel], detectionHalfWidth(), dcGuard());
     }
 
     // Keeps the VFO in the middle of the carrier, smoothed so the audio doesn't jump around
@@ -459,6 +556,8 @@ private:
         receiveStart = now;
         lastSignal = now;
         hold = false;
+        framesSinceListen = 0;
+        confirmedAfterListen = false;
         trackedCenter = center;
         tuneVFO(center);
     }
@@ -489,16 +588,23 @@ private:
         }
 
         int count = (int)windows.size();
-        windowId = ((windowId + (scanUp ? 1 : -1)) % count + count) % count;
+        int next = ((windowId + (scanUp ? 1 : -1)) % count + count) % count;
+        bool wrapped = scanUp ? (next == 0) : (next == count - 1);
+        if (wrapped && windowId >= 0) {
+            auto now = Clock::now();
+            lastSweepSeconds = std::chrono::duration<double>(now - sweepStart).count();
+            sweepStart = now;
+        }
+        windowId = next;
         tuneWindow();
     }
 
     void replanAndTune() {
-        double freq = grid.freq(windows[windowId].first);
+        double freq = channels[windows[windowId].first];
         planWindows();
         windowId = 0;
         for (int i = 0; i < (int)windows.size(); i++) {
-            if (grid.freq(windows[i].last) >= freq) {
+            if (channels[windows[i].last] >= freq) {
                 windowId = i;
                 break;
             }
@@ -508,7 +614,11 @@ private:
 
     void planWindows() {
         plannedBandwidth = gui::waterfall.getBandwidth();
-        windows = scan::planWindows(grid, plannedBandwidth * USABLE_BANDWIDTH);
+
+        // On a regular grid DC goes exactly between two channels, bookmarks can be anywhere so
+        // DC is kept clear of the whole detection width
+        double dcClearance = (mode == MODE_RANGE) ? step / 2.0 : detectionHalfWidth() + DC_CLEARANCE_MARGIN;
+        windows = scan::planWindows(channels, plannedBandwidth * USABLE_BANDWIDTH, dcClearance);
     }
 
     void tuneWindow() {
@@ -516,7 +626,7 @@ private:
         gui::waterfall.setCenterFrequency(window.center);
         gui::waterfall.centerFreqMoved = true;
         sigpath::sourceManager.tune(window.center);
-        tuneVFO(grid.freq(window.first));
+        tuneVFO(channels[window.first]);
 
         int size;
         if (gui::waterfall.acquireRawFFT(size, tuneFrame)) {
@@ -543,6 +653,8 @@ private:
         if (conf.contains("tuningTime")) { tuningTime = conf["tuningTime"]; }
         if (conf.contains("lingerTime")) { lingerTime = conf["lingerTime"]; }
         if (conf.contains("maxListenTime")) { maxListenTime = conf["maxListenTime"]; }
+        if (conf.contains("mode")) { mode = conf["mode"]; }
+        if (conf.contains("bookmarkList")) { bookmarkList = conf["bookmarkList"]; }
         if (conf.contains("lockouts")) {
             for (long long freq : conf["lockouts"]) {
                 lockouts.insert(freq);
@@ -562,6 +674,8 @@ private:
         conf["tuningTime"] = tuningTime;
         conf["lingerTime"] = lingerTime;
         conf["maxListenTime"] = maxListenTime;
+        conf["mode"] = mode;
+        conf["bookmarkList"] = bookmarkList;
         conf["lockouts"] = json::array();
         for (long long freq : lockouts) {
             conf["lockouts"].push_back(freq);
@@ -572,8 +686,15 @@ private:
     static constexpr double AIRBAND_25K = 25000.0;
     static constexpr double AIRBAND_833 = 25000.0 / 3.0;
 
-    static constexpr int TICK_MS = 50;
-    static constexpr int SEARCH_FRAMES = 4;
+    static constexpr int MODE_RANGE = 0;
+    static constexpr int MODE_BOOKMARKS = 1;
+
+    // Every new FFT frame is evaluated, the tick only bounds how often the FFT is polled
+    static constexpr int TICK_MS = 5;
+    static constexpr int SEARCH_FRAMES = 3;
+    static constexpr int VERIFY_FRAMES = 3;
+    static constexpr int SCAN_FFT_RATE = 60;
+    static constexpr double DC_CLEARANCE_MARGIN = 2000.0;
     static constexpr int CONFIRM_FRAMES = 2;
     static constexpr uint64_t FRAMES_AFTER_TUNE = 2;
     static constexpr int SKIP_TIME_S = 30;
@@ -596,7 +717,7 @@ private:
     double step = AIRBAND_25K;
     float trigger = 8.0f;
     float detectionWidth = 70.0f;
-    int tuningTime = 100;
+    int tuningTime = 30;
     int lingerTime = 2000;
     int maxListenTime = 120;
     std::set<long long> lockouts;
@@ -609,7 +730,17 @@ private:
     bool hold = false;
     Clock::time_point lastTick;
 
-    scan::ChannelGrid grid = { 0.0, 0.0, 0.0 };
+    int mode = MODE_RANGE;
+    std::string bookmarkList;
+    std::vector<std::string> bookmarkLists;
+    std::string bookmarkListsTxt;
+    int bookmarkListId = 0;
+    double excludeMHz = 121.5;
+
+    std::vector<double> channels;
+    int userFFTRate = 20;
+    Clock::time_point sweepStart;
+    double lastSweepSeconds = 0.0;
     std::vector<scan::Window> windows;
     double plannedBandwidth = 0.0;
     int windowId = 0;
@@ -628,6 +759,8 @@ private:
     std::vector<int> hits;
 
     int receivingChannel = 0;
+    int framesSinceListen = 0;
+    bool confirmedAfterListen = false;
     float receivingSNR = 0.0f;
     double vfoFreq = 0.0;
     double trackedCenter = 0.0;

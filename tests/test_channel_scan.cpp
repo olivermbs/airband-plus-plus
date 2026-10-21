@@ -23,33 +23,20 @@ TEST(grid_rejects_invalid_ranges) {
     CHECK((ChannelGrid{ 118e6, 120e6, 0.0 }).count() == 0);
 }
 
-static void checkPlan(const ChannelGrid& grid, double usable) {
-    auto windows = planWindows(grid, usable);
-    CHECK(!windows.empty());
+static void checkListPlan(const std::vector<double>& channels, double usable, double dcClearance) {
+    auto windows = planWindows(channels, usable, dcClearance);
     int expectedFirst = 0;
     for (const auto& w : windows) {
         CHECK(w.first == expectedFirst);
         CHECK(w.last >= w.first);
         for (int i = w.first; i <= w.last; i++) {
-            double off = std::fabs(grid.freq(i) - w.center);
+            double off = std::fabs(channels[i] - w.center);
             CHECK(off <= usable / 2.0 + 1e-6);
-            CHECK(off >= grid.step / 2.0 - 1e-6);
+            CHECK(off >= dcClearance - 1e-6);
         }
         expectedFirst = w.last + 1;
     }
-    CHECK(expectedFirst == grid.count());
-}
-
-TEST(windows_cover_every_channel_once_with_dc_between_channels) {
-    checkPlan({ 118000000.0, 136975000.0, STEP_25K }, 2.0e6);
-    checkPlan({ 118000000.0, 136991666.667, STEP_833 }, 2.0e6);
-    checkPlan({ 118000000.0, 118100000.0, STEP_25K }, 2.0e6);
-    checkPlan({ 118000000.0, 118000000.0, STEP_25K }, 2.0e6);
-}
-
-TEST(windows_use_the_usable_span) {
-    auto windows = planWindows({ 118000000.0, 136975000.0, STEP_25K }, 2.0e6);
-    CHECK(windows.size() == 10);
+    CHECK(expectedFirst == (int)channels.size());
 }
 
 struct FakeSpectrum {
@@ -179,6 +166,47 @@ TEST(averaging_keeps_noise_peaks_low) {
         worst = std::max(worst, snr);
     }
     CHECK(worst < 6.0f);
+}
+
+TEST(grid_windows_cover_every_channel_once_with_dc_between_channels) {
+    for (double step : { STEP_25K, STEP_833 }) {
+        ChannelGrid grid = { 118000000.0, 136990000.0, step };
+        checkListPlan(gridChannels(grid), 2.0e6, step / 2.0);
+    }
+    checkListPlan(gridChannels({ 118000000.0, 118100000.0, STEP_25K }), 2.0e6, STEP_25K / 2.0);
+    checkListPlan(gridChannels({ 118000000.0, 118000000.0, STEP_25K }), 2.0e6, STEP_25K / 2.0);
+}
+
+TEST(list_windows_cover_bookmarks_clear_of_dc) {
+    // LOWK: tower, guard, radar, ATIS
+    std::vector<double> lowk = { 118.100e6, 121.500e6, 123.325e6, 126.330e6 };
+    checkListPlan(lowk, 2.176e6, 4000.0);
+    CHECK(planWindows(lowk, 2.176e6, 4000.0).size() == 3);
+
+    // Two bookmarks closer than the DC clearance to any center between them
+    checkListPlan({ 120.000e6, 120.005e6 }, 2.176e6, 4000.0);
+    checkListPlan({ 120.000e6 }, 2.176e6, 4000.0);
+}
+
+TEST(list_windows_match_grid_windows) {
+    ChannelGrid grid = { 118000000.0, 136975000.0, STEP_25K };
+    std::vector<double> channels = gridChannels(grid);
+    CHECK(channels.size() == 760);
+    checkListPlan(channels, 2.0e6, STEP_25K / 2.0);
+    CHECK(planWindows(channels, 2.0e6, STEP_25K / 2.0).size() == 10);
+}
+
+TEST(list_windows_skip_empty_spectrum) {
+    // Nothing between 119 and 135 MHz, no window should be spent there
+    std::vector<double> channels = { 118.0e6, 118.5e6, 135.0e6, 135.2e6 };
+    CHECK(planWindows(channels, 2.0e6, 4000.0).size() == 2);
+}
+
+TEST(nearest_channel_in_list) {
+    std::vector<double> channels = { 118.100e6, 121.500e6, 123.325e6 };
+    CHECK(nearestChannel(channels, 121.502e6) == 1);
+    CHECK(nearestChannel(channels, 100e6) == 0);
+    CHECK(nearestChannel(channels, 130e6) == 2);
 }
 
 int main() { return runTests(); }
