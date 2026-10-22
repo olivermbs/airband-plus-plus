@@ -4,10 +4,19 @@ Airband++ is a fork of [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus) by
 
 What it adds on top of SDR++:
 
-* **Airband scanner**: scans the whole band on an exact 25 kHz or 8.33 kHz grid, or the bookmarks of a Frequency Manager list, several channels per tuning window, in about a second per sweep. Locks onto the strongest signal, listens on the channel, follows carriers that are off frequency, stays while the squelch is open. Exclusions, lockouts, automatic skipping of spurs and continuous broadcasts, an activity log.
+* **Airband scanner**: scans the whole band on an exact 25 kHz or 8.33 kHz grid, or the bookmarks of a Frequency Manager list, several channels per tuning window, in about a second per sweep.
+  * Locks onto the strongest signal and stays while the squelch is open. Each channel covers everything up to halfway to its neighbours, so no carrier falls between two channels.
+  * Keeps the VFO on the carrier of whoever is talking (aircraft and ground station take turns and are rarely on the same frequency), moving once it is 300 Hz off, in a single jump between transmitters.
+  * Offset carrier systems: on the 8.33 kHz grid a carrier several kHz off is credited to the 25 kHz channel it belongs to, and the aircraft answering on the channel itself is followed too.
+  * Reply watch: the other side of a conversation slightly off the channel is heard too.
+  * Priority channels (121.5 MHz by default): always scanned, go first, take over as soon as they are active in the tuning window, and their window is revisited at least every 3 seconds.
+  * Exclusions and lockouts, automatic skipping of spurs, stuck carriers and continuous broadcasts with cooldowns that grow on repeats, an activity log with the Frequency Manager's bookmark names.
+* **Transmission recording**: the scanner saves each transmission to its own WAV file, named after time, frequency and bookmark, for every channel or only chosen frequencies (121.5 MHz by default), with long pauses shortened and false starts thrown away. Clips play back from the activity log on their own audio output.
+* **Clarity**: a voice processor for AM: presence EQ that lifts the consonants (+6 dB around 2.2 kHz) and cuts the hiss above the voice, a leveler so weak aircraft and loud ground stations come out equally loud, and a limiter against clipping. Chosen by ear on airband recordings.
+* **Audio for weak AM**: synchronous AM detection, noise reduction, a 300 Hz high-pass, a 6 kHz filter (airband voice reaches 2.5-3 kHz either side of the carrier, measured).
 * **Auto squelch**: follows the noise floor measured from the spectrum around the channel, closes immediately on retune, clean fades instead of clicks.
-* **Audio for weak AM**: synchronous AM detection, adjustable noise reduction, a cheap 300 Hz high-pass.
 * **RTL-SDR**: a bundled, patched librtlsdr (from the RTL-SDR Blog fork, for the V4) that survives the dongle being unplugged or losing power, recovers by itself, and retunes about a third faster; retuning off the GUI thread.
+* **Fixes from other SDR++ forks**: audio keeps running without an output device instead of freezing the spectrum, the rigctl server no longer leaks a socket per client and works with WSJT-X and JS8Call in VFO mode, the SDR++ server source notices a dead link.
 * **Performance and fixes**: waterfall uploads only new lines, UI frame rate limit, many smaller bug fixes.
 
 Build as SDR++ (see below). The unit tests are built with `-DOPT_BUILD_TESTS=ON` and run with `ctest`.
