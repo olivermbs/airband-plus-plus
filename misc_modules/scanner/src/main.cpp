@@ -99,16 +99,14 @@ private:
         }
 
         if (_this->mode == MODE_BOOKMARKS) {
+            // Lists created in the frequency manager show up without having to refresh
+            if (Clock::now() - _this->lastListRefresh > std::chrono::seconds(LIST_REFRESH_S)) { _this->refreshBookmarkLists(); }
+
             ImGui::LeftLabel("List");
-            float refreshWidth = ImGui::CalcTextSize("Refresh").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-            ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX() - refreshWidth - ImGui::GetStyle().ItemSpacing.x);
+            ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
             if (ImGui::Combo(("##scanner_bm_list_" + _this->name).c_str(), &_this->bookmarkListId, _this->bookmarkListsTxt.c_str())) {
                 _this->bookmarkList = _this->bookmarkLists[_this->bookmarkListId];
                 changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(("Refresh##scanner_bm_refresh_" + _this->name).c_str())) {
-                _this->refreshBookmarkLists();
             }
         }
 
@@ -340,10 +338,13 @@ private:
         }
     }
 
-    // Lists of the frequency manager, read from its config file
+    // Lists of the frequency manager, read from its config file. The first entry, an empty
+    // name, follows the list selected in the frequency manager.
     void refreshBookmarkLists() {
-        bookmarkLists.clear();
-        bookmarkListsTxt.clear();
+        lastListRefresh = Clock::now();
+        bookmarkLists.assign(1, "");
+        bookmarkListsTxt = "Frequency Manager's list";
+        bookmarkListsTxt += '\0';
         json fm = readFrequencyManagerConfig();
         if (fm.contains("lists") && fm["lists"].is_object()) {
             for (auto& [listName, list] : fm["lists"].items()) {
@@ -355,7 +356,7 @@ private:
 
         auto it = std::find(bookmarkLists.begin(), bookmarkLists.end(), bookmarkList);
         bookmarkListId = (it == bookmarkLists.end()) ? 0 : (int)(it - bookmarkLists.begin());
-        if (!bookmarkLists.empty()) { bookmarkList = bookmarkLists[bookmarkListId]; }
+        bookmarkList = bookmarkLists[bookmarkListId];
     }
 
     static json readFrequencyManagerConfig() {
@@ -367,8 +368,10 @@ private:
     std::vector<double> bookmarkChannels() {
         std::vector<double> freqs;
         json fm = readFrequencyManagerConfig();
-        if (!fm.contains("lists") || !fm["lists"].contains(bookmarkList)) { return freqs; }
-        json& bookmarks = fm["lists"][bookmarkList]["bookmarks"];
+        scannedList = bookmarkList;
+        if (scannedList.empty() && fm.contains("selectedList") && fm["selectedList"].is_string()) { scannedList = fm["selectedList"]; }
+        if (!fm.contains("lists") || !fm["lists"].contains(scannedList)) { return freqs; }
+        json& bookmarks = fm["lists"][scannedList]["bookmarks"];
         if (!bookmarks.is_object()) { return freqs; }
         for (auto& [bmName, bm] : bookmarks.items()) {
             if (bm.contains("frequency")) { freqs.push_back(bm["frequency"]); }
@@ -422,7 +425,7 @@ private:
             if (!lockouts.count(std::llround(freq))) { channels.push_back(freq); }
         }
         if (channels.empty()) {
-            error = (mode == MODE_RANGE) ? "Invalid frequency range" : "No bookmarks in this list";
+            error = (mode == MODE_RANGE) ? "Invalid frequency range" : ("No bookmarks in list \"" + scannedList + "\"");
             return;
         }
 
@@ -959,6 +962,9 @@ private:
     std::vector<std::string> bookmarkLists;
     std::string bookmarkListsTxt;
     int bookmarkListId = 0;
+    std::string scannedList;
+    Clock::time_point lastListRefresh;
+    static constexpr int LIST_REFRESH_S = 2;
     double excludeMHz = 121.5;
 
     std::vector<double> channels;
