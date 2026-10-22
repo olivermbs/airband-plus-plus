@@ -1,4 +1,7 @@
 /*
+ * Modified October 2026 for the SDR++ fork olivermbs/oliver-sdr: safe teardown of
+ * the async transfers when the device is lost, cached I2C repeater state.
+ *
  * rtl-sdr, turns your Realtek RTL2832 based DVB dongle into a SDR receiver
  * Copyright (C) 2012-2014 by Steve Markgraf <steve@steve-m.de>
  * Copyright (C) 2012 by Dimitri Stolnikov <horiz0n@gmx.net>

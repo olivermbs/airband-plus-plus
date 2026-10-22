@@ -1,4 +1,6 @@
 /*
+ * Modified October 2026 for the SDR++ fork olivermbs/oliver-sdr: shadow_unreliable.
+ *
  * Rafael Micro R820T/R828D driver
  *
  * Copyright (C) 2013 Mauro Carvalho Chehab <mchehab@redhat.com>

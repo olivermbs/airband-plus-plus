@@ -1,4 +1,7 @@
 /*
+ * Modified October 2026 for the SDR++ fork olivermbs/oliver-sdr: skips register
+ * writes that don't change the chip, writes Ni/Si and SDM in one burst.
+ *
  * Rafael Micro R820T/R828D driver
  *
  * Copyright (C) 2013 Mauro Carvalho Chehab <mchehab@redhat.com>
