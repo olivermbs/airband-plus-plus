@@ -14,6 +14,7 @@
 #include <dsp/multirate/rational_resampler.h>
 #include <dsp/filter/deephasis.h>
 #include <dsp/filter/high_pass.h>
+#include <dsp/noise_reduction/audio_nr.h>
 #include <core.h>
 #include <stdint.h>
 #include <utils/optionlist.h>
@@ -108,6 +109,8 @@ public:
 
         afChain.addBlock(&ctcss, false);
         afChain.addBlock(&resamp, true);
+        audioNR.init(NULL, 48000.0);
+        afChain.addBlock(&audioNR, false);
         afChain.addBlock(&hpf, false);
         afChain.addBlock(&deemp, false);
 
@@ -342,6 +345,13 @@ private:
             }
         }
 
+        // Audio noise reduction, for voice
+        if (_this->audioNRAllowed) {
+            if (ImGui::Checkbox(("Noise Reduction##_radio_audio_nr_" + _this->name).c_str(), &_this->audioNREnabled)) {
+                _this->setAudioNR(_this->audioNREnabled);
+            }
+        }
+
         // Demodulator specific menu
         _this->selectedDemod->showMenu();
 
@@ -470,6 +480,7 @@ private:
         squelchMargin = DEFAULT_SQUELCH_MARGIN;
         ctcssToneId = ctcssTones.valueId(dsp::noise_reduction::CTCSS_TONE_67Hz);
         highPass = false;
+        audioNREnabled = false;
 
         postProcEnabled = selectedDemod->getPostProcEnabled();
         FMIFNRAllowed = selectedDemod->getFMIFNRAllowed();
@@ -478,6 +489,8 @@ private:
         nbAllowed = selectedDemod->getNBAllowed();
         squelchAllowed = selectedDemod->getSquelchAllowed();
         highPassAllowed = selectedDemod->getHighPassAllowed();
+        // Not for broadcast FM, it is meant for voice and would muddle stereo music
+        audioNRAllowed = selectedDemod->getPostProcEnabled() && selectedDemodID != RADIO_DEMOD_WFM;
         nbEnabled = false;
         nbLevel = 0.0f;
         double ifSamplerate = selectedDemod->getIFSampleRate();
@@ -507,6 +520,9 @@ private:
             if (ctcssTones.keyExists(ctcssToneX10)) {
                 ctcssToneId = ctcssTones.keyId(ctcssToneX10);
             }
+        }
+        if (config.conf[name][selectedDemod->getName()].contains("audioNR")) {
+            audioNREnabled = config.conf[name][selectedDemod->getName()]["audioNR"];
         }
         if (config.conf[name][selectedDemod->getName()].contains("highPass")) {
             highPass = config.conf[name][selectedDemod->getName()]["highPass"];
@@ -578,6 +594,7 @@ private:
 
             // Configure the HPF
             setHighPass(highPass && highPassAllowed);
+            setAudioNR(audioNREnabled && audioNRAllowed);
 
             // Configure deemphasis
             setDeemphasisMode(deempModes[deempId]);
@@ -626,11 +643,22 @@ private:
 
         // Configure the HPF sample rate
         hpf.setSamplerate(audioSampleRate);
+        audioNR.setSamplerate(audioSampleRate);
 
         // Configure deemphasis sample rate
         deemp.setSamplerate(audioSampleRate);
 
         afChain.start();
+    }
+
+    void setAudioNR(bool enabled) {
+        audioNREnabled = enabled;
+        if (!postProcEnabled || !selectedDemod) { return; }
+        afChain.setBlockEnabled(&audioNR, enabled, [=](dsp::stream<dsp::stereo_t>* out){ stream.setInput(out); });
+
+        config.acquire();
+        config.conf[name][selectedDemod->getName()]["audioNR"] = enabled;
+        config.release(true);
     }
 
     void setHighPass(bool enabled) {
@@ -988,6 +1016,7 @@ private:
     dsp::noise_reduction::CTCSSSquelch ctcss;
     dsp::multirate::RationalResampler<dsp::stereo_t> resamp;
     dsp::filter::HighPass hpf;
+    dsp::noise_reduction::AudioNoiseReduction audioNR;
     dsp::filter::Deemphasis<dsp::stereo_t> deemp;
 
     SinkManager::Stream stream;
@@ -1016,6 +1045,9 @@ private:
 
     bool highPass = false;
     bool highPassAllowed = false;
+
+    bool audioNREnabled = false;
+    bool audioNRAllowed = false;
 
     int deempId = 0;
     bool deempAllowed;
