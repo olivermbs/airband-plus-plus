@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 project(sdrpp_tests)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_executable(test_noise_floor_tracker test_noise_floor_tracker.cpp)
 target_include_directories(test_noise_floor_tracker PRIVATE "../core/src")
 add_test(NAME noise_floor_tracker COMMAND test_noise_floor_tracker)
