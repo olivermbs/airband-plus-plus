@@ -12,6 +12,7 @@
 #include <dsp/noise_reduction/ctcss_squelch.h>
 #include <dsp/multirate/rational_resampler.h>
 #include <dsp/filter/deephasis.h>
+#include <dsp/filter/high_pass.h>
 #include <core.h>
 #include <stdint.h>
 #include <utils/optionlist.h>
@@ -101,8 +102,7 @@ public:
 
         ctcss.init(NULL, 50000.0);
         resamp.init(NULL, 250000.0, 48000.0);
-        hpTaps = dsp::taps::highPass(300.0, 100.0, 48000.0);
-        hpf.init(NULL, hpTaps);
+        hpf.init(NULL, 300.0, 48000.0);
         deemp.init(NULL, 50e-6, 48000.0);
 
         afChain.addBlock(&ctcss, false);
@@ -617,8 +617,7 @@ private:
         resamp.setOutSamplerate(audioSampleRate);
 
         // Configure the HPF sample rate
-        hpTaps = dsp::taps::highPass(300.0, 100.0, audioSampleRate);
-        hpf.setTaps(hpTaps);
+        hpf.setSamplerate(audioSampleRate);
 
         // Configure deemphasis sample rate
         deemp.setSamplerate(audioSampleRate);
@@ -917,8 +916,7 @@ private:
     dsp::chain<dsp::stereo_t> afChain;
     dsp::noise_reduction::CTCSSSquelch ctcss;
     dsp::multirate::RationalResampler<dsp::stereo_t> resamp;
-    dsp::tap<float> hpTaps;
-    dsp::filter::FIR<dsp::stereo_t, float> hpf;
+    dsp::filter::HighPass hpf;
     dsp::filter::Deemphasis<dsp::stereo_t> deemp;
 
     SinkManager::Stream stream;
