@@ -145,6 +145,11 @@ bundle_install_binary() {
     echo "$DEPS" | while read -r DEP; do
         local DEP_NAME=$(basename $DEP)
 
+        # Never bundle macOS's own libraries, whatever their name (e.g. QuartzCore used by newer GLFW)
+        case "$DEP" in
+            /System/Library/*|/usr/lib/*) continue ;;
+        esac
+
         # Skip if this dep is blacklisted
         local NOT_TO_BE_INSTALLED=$(bundle_is_not_to_be_installed $DEP_NAME)
         if [ "$NOT_TO_BE_INSTALLED" = "1" ]; then

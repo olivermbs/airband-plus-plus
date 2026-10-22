@@ -6,7 +6,8 @@ void CommandArgsParser::defineAll() {
         std::string root = ".";
         define('c', "con", "Show console on Windows");
 #elif defined(IS_MACOS_BUNDLE)
-        std::string root = (std::string)getenv("HOME") + "/Library/Application Support/sdrpp";
+        // Its own folder, so it doesn't share (and overwrite) the settings of an installed SDR++
+        std::string root = (std::string)getenv("HOME") + "/Library/Application Support/airbandpp";
 #elif defined(__ANDROID__)
         std::string root = "/storage/self/primary/sdrpp";
 #else

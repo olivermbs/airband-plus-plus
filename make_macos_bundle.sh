@@ -23,6 +23,8 @@ bundle_create_icns root/res/icons/sdrpp.macos.png $BUNDLE/Contents/Resources/sdr
 
 # Create the property list
 bundle_create_plist sdrpp Airband++ org.sdrpp.sdrpp 1.3.1 sdrp sdrpp sdrpp $BUNDLE/Contents/Info.plist
+# The menu bar shows the bundle name, the executable keeps its name
+/usr/libexec/PlistBuddy -c "Set :CFBundleName Airband++" $BUNDLE/Contents/Info.plist
 
 # ========================= Install binaries =========================
 
