@@ -565,10 +565,11 @@ private:
         smoothedRatio += RECEIVE_SMOOTHING * (frameRatio - smoothedRatio);
         receivingSNR = 10.0f * std::log10(std::max<float>(smoothedRatio, 1e-6f));
         receivePeakSNR = std::max<float>(receivePeakSNR, receivingSNR);
-        // Stay while either hears it: a weak reply from the ground may stay under the squelch
-        // but still shows in the FFT
+        // Stay only while it can be heard: with a level squelch that is the squelch's call. A
+        // signal the FFT sees but the squelch keeps silent held the scanner on a channel playing
+        // nothing. Without a squelch the FFT decides.
         int squelch = radioSquelchState();
-        bool present = (squelch == RADIO_IFACE_SQUELCH_OPEN) || (receivingSNR >= trigger - RECEIVE_HYSTERESIS);
+        bool present = (squelch == RADIO_IFACE_SQUELCH_NONE) ? (receivingSNR >= trigger - RECEIVE_HYSTERESIS) : (squelch == RADIO_IFACE_SQUELCH_OPEN);
         if (present) {
             lastSignal = now;
             confirmedAfterListen = true;
@@ -596,7 +597,7 @@ private:
         // Nothing in the frames after locking on: it was a noise spike or a stale frame from before
         // the retune, don't wait for the linger time
         framesSinceListen++;
-        if (!confirmedAfterListen && framesSinceListen >= VERIFY_FRAMES) {
+        if (!confirmedAfterListen && now - receiveStart >= std::chrono::milliseconds(VERIFY_MS)) {
             resumeSearching();
             return;
         }
@@ -854,7 +855,8 @@ private:
     // Every new FFT frame is evaluated, the tick only bounds how often the FFT is polled
     static constexpr int TICK_MS = 5;
     static constexpr int SEARCH_FRAMES = 3;
-    static constexpr int VERIFY_FRAMES = 3;
+    // Time for the squelch to open after locking on, else it was a false start
+    static constexpr int VERIFY_MS = 250;
     static constexpr int SCAN_FFT_RATE = 60;
     static constexpr double DC_CLEARANCE_MARGIN = 2000.0;
     static constexpr int MIN_AVERAGED_FRAMES = 2;
