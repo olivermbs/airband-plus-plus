@@ -12,3 +12,7 @@ add_test(NAME channel_scan COMMAND test_channel_scan)
 add_executable(test_butterworth test_butterworth.cpp)
 target_include_directories(test_butterworth PRIVATE "../core/src")
 add_test(NAME butterworth COMMAND test_butterworth)
+
+add_executable(test_spectrum_noise test_spectrum_noise.cpp)
+target_include_directories(test_spectrum_noise PRIVATE "../core/src")
+add_test(NAME spectrum_noise COMMAND test_spectrum_noise)

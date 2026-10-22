@@ -23,9 +23,38 @@ namespace dsp::noise_reduction {
             _openTime = 0.0;
         }
 
+        // The frequency changed: what was learnt describes another frequency. The gate closes
+        // at once, the samples still in flight are discarded, and without a reference floor
+        // the floor is learnt again from the new frequency.
+        void retune() {
+            _open = false;
+            _hangRemaining = 0.0;
+            _openTime = 0.0;
+            _settleRemaining = SETTLE_TIME;
+            if (!_hasReference) { _initialized = false; }
+        }
+
+        // Floor measured elsewhere, e.g. from the spectrum around the channel. It is used as is
+        // instead of being learnt from the level, so a signal can't be mistaken for noise.
+        void setReferenceFloor(float floor) {
+            _hasReference = true;
+            _floor = floor;
+            _initialized = true;
+        }
+
+        void clearReferenceFloor() {
+            _hasReference = false;
+        }
+
+        bool hasReferenceFloor() const { return _hasReference; }
+
         bool update(float level, double duration) {
             // No samples flowing yet (e.g. right after starting), nothing to learn from
             if (!std::isfinite(level) || level < MIN_LEVEL) { return _open; }
+            if (_settleRemaining > 0.0) {
+                _settleRemaining -= duration;
+                return _open;
+            }
             _level = level;
 
             if (!_initialized) {
@@ -45,6 +74,8 @@ namespace dsp::noise_reduction {
                 if (_hangRemaining <= 0.0) { _open = false; }
             }
             _openTime = _open ? _openTime + duration : 0.0;
+
+            if (_hasReference) { return _open; }
 
             if (level < _floor) {
                 _floor = std::max<float>(level, _floor - FALL_RATE * duration);
@@ -75,6 +106,7 @@ namespace dsp::noise_reduction {
         static constexpr double LONG_OPEN_TIME = 30.0;
         static constexpr double STUCK_TIME_CONSTANT = 3.0;
         static constexpr float MIN_LEVEL = -120.0f;
+        static constexpr double SETTLE_TIME = 0.05;
 
         float _margin = 3.0f;
         float _hysteresis = 1.0f;
@@ -86,5 +118,7 @@ namespace dsp::noise_reduction {
         float _level = 0.0f;
         double _hangRemaining = 0.0;
         double _openTime = 0.0;
+        double _settleRemaining = 0.0;
+        bool _hasReference = false;
     };
 }

@@ -9,6 +9,7 @@
 #include <dsp/noise_reduction/noise_blanker.h>
 #include <dsp/noise_reduction/fm_if.h>
 #include <dsp/noise_reduction/power_squelch.h>
+#include <dsp/noise_reduction/spectrum_noise.h>
 #include <dsp/noise_reduction/ctcss_squelch.h>
 #include <dsp/multirate/rational_resampler.h>
 #include <dsp/filter/deephasis.h>
@@ -133,9 +134,14 @@ public:
 
         // Register the module interface
         core::modComManager.registerInterface("radio", name, moduleInterfaceHandler, this);
+
+        frameHandler.handler = frameEventHandler;
+        frameHandler.ctx = this;
+        gui::mainWindow.onFrame.bindHandler(&frameHandler);
     }
 
     ~RadioModule() {
+        gui::mainWindow.onFrame.unbindHandler(&frameHandler);
         core::modComManager.unregisterInterface(name);
         gui::menu.removeEntry(name);
         stream.stop();
@@ -331,7 +337,7 @@ private:
 
         // High pass
         if (_this->highPassAllowed) {
-            if (ImGui::Checkbox(("High Pass##_radio_hpf_" + _this->name).c_str(), &_this->highPass)) {
+            if (ImGui::Checkbox(("High Pass (300 Hz)##_radio_hpf_" + _this->name).c_str(), &_this->highPass)) {
                 _this->setHighPass(_this->highPass);
             }
         }
@@ -554,6 +560,7 @@ private:
 
         // Configure squelch
         powerSquelch.setSamplerate(ifSamplerate);
+        resetSquelchReference();
         setSquelchMargin(squelchMargin);
         setSquelchMode(squelchAllowed ? squelchModes[squelchModeId] : SQUELCH_MODE_OFF);
         setSquelchLevel(squelchLevel);
@@ -588,6 +595,7 @@ private:
     void setBandwidth(double bw) {
         bw = std::clamp<double>(bw, minBandwidth, maxBandwidth);
         bandwidth = bw;
+        resetSquelchReference();
         if (!selectedDemod) { return; }
         vfo->setBandwidth(bandwidth);
         selectedDemod->setBandwidth(bandwidth);
@@ -801,6 +809,68 @@ private:
         config.release(true);
     }
 
+    // Runs every frame on the GUI thread, where tuning happens
+    static void frameEventHandler(bool playing, void* ctx) {
+        RadioModule* _this = (RadioModule*)ctx;
+        if (!_this->enabled || !_this->vfo || !_this->selectedDemod) { return; }
+        _this->updateSquelchReference();
+    }
+
+    // Tells the squelch when the frequency changed, however it was changed, and gives the auto
+    // squelch a noise floor measured from the spectrum around the channel. A floor learnt from
+    // the channel's own level only describes where it was learnt, and can't tell a long
+    // transmission from noise.
+    void updateSquelchReference() {
+        auto now = std::chrono::steady_clock::now();
+        double freq = gui::waterfall.getCenterFrequency() + vfo->wtfVFO->centerOffset;
+        if (std::fabs(freq - lastSquelchFreq) > SQUELCH_RETUNE_HZ) {
+            lastSquelchFreq = freq;
+            lastSquelchRetune = now;
+            powerSquelch.retune();
+        }
+        if (!squelchAllowed || squelchModes[squelchModeId] != SQUELCH_MODE_AUTO) { return; }
+
+        // The spectrum takes a moment to show the new frequency after a retune of the SDR
+        if (now - lastSquelchRetune < std::chrono::milliseconds(SQUELCH_SPECTRUM_SETTLE_MS)) { return; }
+
+        int size = 0;
+        uint64_t frame = 0;
+        float* fft = gui::waterfall.acquireRawFFT(size, frame);
+        if (!fft) { return; }
+        if (frame == lastSquelchFrame) {
+            gui::waterfall.releaseRawFFT();
+            return;
+        }
+        lastSquelchFrame = frame;
+        double center = gui::waterfall.getCenterFrequency();
+        double span = gui::waterfall.getBandwidth();
+        double binWidth = span / (double)size;
+        dsp::noise_reduction::ChannelPower power = dsp::noise_reduction::measureChannel(fft, size, center - (span / 2.0) - (binWidth / 2.0), span, center, freq, bandwidth);
+        gui::waterfall.releaseRawFFT();
+
+        if (!power.valid) {
+            resetSquelchReference();
+            return;
+        }
+
+        // How the squelch's own level relates to the spectrum, learnt while the channel is empty
+        bool channelEmpty = (power.channelDb - power.noiseDb) < SQUELCH_EMPTY_CHANNEL_DB;
+        float sample = powerSquelch.getLevel() - power.noiseDb;
+        if (channelEmpty && !powerSquelch.isOpen() && std::isfinite(sample)) {
+            squelchOffset = (squelchCalibrationFrames == 0) ? sample : squelchOffset + SQUELCH_CALIBRATION_SMOOTHING * (sample - squelchOffset);
+            squelchCalibrationFrames++;
+        }
+
+        if (squelchCalibrationFrames >= SQUELCH_MIN_CALIBRATION_FRAMES) {
+            powerSquelch.setReferenceFloor(power.noiseDb + squelchOffset);
+        }
+    }
+
+    void resetSquelchReference() {
+        squelchCalibrationFrames = 0;
+        powerSquelch.clearReferenceFloor();
+    }
+
     static void vfoUserChangedBandwidthHandler(double newBw, void* ctx) {
         RadioModule* _this = (RadioModule*)ctx;
         _this->setBandwidth(newBw);
@@ -898,6 +968,7 @@ private:
     }
 
     // Handlers
+    EventHandler<bool> frameHandler;
     EventHandler<double> onUserChangedBandwidthHandler;
     EventHandler<float> srChangeHandler;
     EventHandler<dsp::stream<dsp::complex_t>*> ifChainOutputChanged;
@@ -966,6 +1037,18 @@ private:
     const double MIN_SQUELCH = -100.0;
     const double MAX_SQUELCH = 0.0;
     const float DEFAULT_SQUELCH_MARGIN = 5.0f;
+
+    // Auto squelch reference from the spectrum
+    static constexpr double SQUELCH_RETUNE_HZ = 10.0;
+    static constexpr int SQUELCH_SPECTRUM_SETTLE_MS = 100;
+    static constexpr float SQUELCH_EMPTY_CHANNEL_DB = 1.5f;
+    static constexpr float SQUELCH_CALIBRATION_SMOOTHING = 0.05f;
+    static constexpr int SQUELCH_MIN_CALIBRATION_FRAMES = 10;
+    double lastSquelchFreq = 0.0;
+    std::chrono::steady_clock::time_point lastSquelchRetune;
+    uint64_t lastSquelchFrame = 0;
+    float squelchOffset = 0.0f;
+    int squelchCalibrationFrames = 0;
     const float MIN_SQUELCH_MARGIN = 1.0f;
     const float MAX_SQUELCH_MARGIN = 30.0f;
 

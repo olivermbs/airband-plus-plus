@@ -52,6 +52,22 @@ namespace dsp::noise_reduction {
             tracker.setMargin(margin);
         }
 
+        // The frequency changed, see NoiseFloorTracker::retune()
+        void retune() {
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            tracker.retune();
+        }
+
+        void setReferenceFloor(float floor) {
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            tracker.setReferenceFloor(floor);
+        }
+
+        void clearReferenceFloor() {
+            std::lock_guard<std::mutex> lck(trackerMtx);
+            tracker.clearReferenceFloor();
+        }
+
         // Keeps the output silent while still measuring, e.g. while a scanner is searching
         void setForceClosed(bool forceClosed) { _forceClosed = forceClosed; }
 

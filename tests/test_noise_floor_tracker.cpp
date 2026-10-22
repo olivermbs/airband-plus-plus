@@ -139,4 +139,59 @@ TEST(catches_up_quickly_once_stuck_open) {
     CHECK(!t.isOpen());
 }
 
+TEST(closes_at_once_on_retune_and_relearns) {
+    std::mt19937 rng(20);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    feed(t, -60.0f, 5.0, rng);
+    feed(t, -30.0f, 1.0, rng);
+    CHECK(t.isOpen());
+
+    // Retuned to an empty channel 10dB noisier than where the floor was learnt
+    t.retune();
+    CHECK(!t.isOpen());
+    feed(t, -50.0f, 1.0, rng);
+    CHECK(!t.isOpen());
+    CHECK_NEAR(t.getNoiseFloor(), -50.0f, 1.0f);
+
+    // And still opens on a signal there
+    feed(t, -40.0f, 0.2, rng);
+    CHECK(t.isOpen());
+}
+
+TEST(reference_floor_follows_retune_onto_active_channel) {
+    std::mt19937 rng(21);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    feed(t, -60.0f, 5.0, rng);
+
+    // The spectrum says the noise at the new frequency is -50dB, and there is a signal on it
+    t.retune();
+    t.setReferenceFloor(-50.0f);
+    feed(t, -35.0f, 1.0, rng);
+    CHECK(t.isOpen());
+    CHECK_NEAR(t.getNoiseFloor(), -50.0f, 0.01f);
+}
+
+TEST(reference_floor_keeps_long_transmission_open) {
+    std::mt19937 rng(22);
+    NoiseFloorTracker t;
+    t.setMargin(5.0f);
+    t.setReferenceFloor(-60.0f);
+    feed(t, -60.0f, 2.0, rng);
+    feed(t, -40.0f, 120.0, rng);
+    CHECK(t.isOpen());
+    feed(t, -60.0f, 1.0, rng);
+    CHECK(!t.isOpen());
+}
+
+TEST(clearing_reference_returns_to_learning) {
+    std::mt19937 rng(23);
+    NoiseFloorTracker t;
+    t.setReferenceFloor(-40.0f);
+    t.clearReferenceFloor();
+    feed(t, -60.0f, 5.0, rng);
+    CHECK_NEAR(t.getNoiseFloor(), -60.0f, 1.0f);
+}
+
 int main() { return runTests(); }
