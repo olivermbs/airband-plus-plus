@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <utility>
 #include <vector>
 
 // Channel scanning logic, independent of the GUI so it can be tested
@@ -99,6 +101,58 @@ namespace scan {
             return binOverlaps(bin, dcFreq - dcGuard, dcFreq + dcGuard);
         }
     };
+
+    // Every frequency belongs to the nearest channel, so no carrier gets lost between two. Offset
+    // carrier systems put a channel's carriers several kHz off its frequency, on the 8.33kHz
+    // grid that is beyond a third of the spacing.
+    inline double channelHalfWidth(double step) {
+        return step / 2.0;
+    }
+
+    // The channel a carrier belongs to. Offset carrier systems put a 25kHz channel's ground
+    // transmitters up to 7.5kHz off it, far more than an 8.33kHz radio strays (they are held to
+    // about 1ppm, 0.1kHz). So on the 8.33kHz grid a carrier clearly off its nearest channel is
+    // one of these, and belongs to the 25kHz channel within reach, not to an 8.33kHz neighbour.
+    inline double owningChannel(double carrier, double nearest, double step) {
+        const double GRID_833 = 25000.0 / 3.0;
+        const double CHANNEL_25K = 25000.0;
+        const double TOLERANCE_833 = 1500.0;
+        const double OFFSET_REACH = 8000.0;
+
+        if (std::fabs(step - GRID_833) > 1.0) { return nearest; }
+        if (std::fabs(carrier - nearest) <= TOLERANCE_833) { return nearest; }
+        double channel = std::round(carrier / CHANNEL_25K) * CHANNEL_25K;
+        return (std::fabs(carrier - channel) <= OFFSET_REACH) ? channel : nearest;
+    }
+
+    // Where carriers of a channel are looked for while listening to it: the whole channel, and
+    // the reach of its offset carriers when it is a 25kHz channel heard on one of them
+    inline double carrierSearchHalfWidth(bool offsetCarrier, double step) {
+        const double OFFSET_REACH = 8000.0;
+        return offsetCarrier ? OFFSET_REACH : channelHalfWidth(step);
+    }
+
+    // Name of the bookmark on a frequency, empty if there is none within the tolerance
+    inline std::string bookmarkAt(const std::vector<std::pair<double, std::string>>& bookmarks, double freq, double tolerance) {
+        const std::string* best = nullptr;
+        double bestOffset = tolerance;
+        for (const auto& [bookmarkFreq, name] : bookmarks) {
+            double offset = std::fabs(bookmarkFreq - freq);
+            if (offset > bestOffset) { continue; }
+            best = &name;
+            bestOffset = offset;
+        }
+        return best ? *best : "";
+    }
+
+    // Minutes a channel is skipped automatically, longer each time it happens again. Priority
+    // channels never go beyond the first step, something important may start there any time.
+    inline int autoSkipMinutes(int strikes, bool priority) {
+        const int STEPS[] = { 2, 5, 10, 30 };
+        const int LAST = (int)(sizeof(STEPS) / sizeof(STEPS[0])) - 1;
+        if (priority) { return STEPS[0]; }
+        return STEPS[std::clamp<int>(strikes, 0, LAST)];
+    }
 
     // How many raw FFT bins to average per detection bin: about an eighth of the channel step,
     // and never so few that the noise of a single bin dominates
@@ -266,21 +320,31 @@ namespace scan {
     }
 
     // Frequency of the middle of the strongest signal within the channel: the power
-    // weighted centroid of the bins within 6dB of the peak. Gives sub-bin precision and
-    // finds carriers that are off the nominal channel frequency.
+    // weighted centroid of the bins within 6dB of the peak around it. Gives sub-bin precision
+    // and finds carriers that are off the nominal channel frequency. Only the peak's own bins
+    // count, a second carrier in the channel would pull the centre between the two.
     inline double signalCenter(const Spectrum& spectrum, double freq, double halfWidth, double dcGuard) {
         const float PEAK_RANGE_DB = 6.0f;
 
         int low = std::max<int>(0, spectrum.binOf(freq - halfWidth));
         int high = std::min<int>(spectrum.width - 1, spectrum.binOf(freq + halfWidth));
-        float peak = channelPeak(spectrum, freq, halfWidth, dcGuard);
-        if (!std::isfinite(peak)) { return freq; }
+        int peakBin = -1;
+        for (int i = low; i <= high; i++) {
+            if (spectrum.binNearDc(i, dcGuard)) { continue; }
+            if (peakBin < 0 || spectrum.data[i] > spectrum.data[peakBin]) { peakBin = i; }
+        }
+        if (peakBin < 0 || !std::isfinite(spectrum.data[peakBin])) { return freq; }
+        float peak = spectrum.data[peakBin];
+
+        auto belongsToPeak = [&](int i) { return !spectrum.binNearDc(i, dcGuard) && spectrum.data[i] >= peak - PEAK_RANGE_DB; };
+        int first = peakBin;
+        while (first > low && belongsToPeak(first - 1)) { first--; }
+        int last = peakBin;
+        while (last < high && belongsToPeak(last + 1)) { last++; }
 
         double weightSum = 0.0;
         double freqSum = 0.0;
-        for (int i = low; i <= high; i++) {
-            if (spectrum.binNearDc(i, dcGuard)) { continue; }
-            if (spectrum.data[i] < peak - PEAK_RANGE_DB) { continue; }
+        for (int i = first; i <= last; i++) {
             double weight = std::pow(10.0, (spectrum.data[i] - peak) / 10.0);
             double binCenter = spectrum.start + ((double)i + 0.5) * spectrum.binWidth();
             weightSum += weight;

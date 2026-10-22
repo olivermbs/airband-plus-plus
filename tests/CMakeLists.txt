@@ -32,6 +32,10 @@ target_link_directories(test_spectral_nr PRIVATE ${FFTW3_LIBRARY_DIRS})
 target_link_libraries(test_spectral_nr PRIVATE ${FFTW3_LIBRARIES})
 add_test(NAME spectral_nr COMMAND test_spectral_nr)
 
+add_executable(test_recording test_recording.cpp)
+target_include_directories(test_recording PRIVATE "../misc_modules/scanner/src")
+add_test(NAME recording COMMAND test_recording)
+
 add_executable(test_speech_processor test_speech_processor.cpp)
 target_include_directories(test_speech_processor PRIVATE "../core/src")
 add_test(NAME speech_processor COMMAND test_speech_processor)

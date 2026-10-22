@@ -121,6 +121,86 @@ TEST(signal_center_finds_offset_carrier) {
     CHECK_NEAR(signalCenter(s.view, channel, 8750.0, 3000.0), binCenter, 1.0);
 }
 
+// An AM transmitter in the spectrum: the carrier with voice sidebands either side of it
+static void addAmSignal(FakeSpectrum& s, double carrier, float carrierLevel, float sidebandLevel) {
+    double binWidth = s.view.binWidth();
+    for (double offset = 300.0; offset <= 3000.0; offset += binWidth) {
+        s.bins[s.view.binOf(carrier - offset)] = sidebandLevel;
+        s.bins[s.view.binOf(carrier + offset)] = sidebandLevel;
+    }
+    s.addCarrier(carrier, carrierLevel);
+}
+
+TEST(offset_carrier_between_833_channels_belongs_to_the_nearest) {
+    // Offset carrier systems put a 25kHz channel's carriers a few kHz off, here 118.100 is
+    // heard on 118.1035, beyond a third of the 8.33kHz spacing. 312.5Hz bins as with an
+    // 8192 point FFT at 2.56MS/s.
+    double center = 118000000.0;
+    FakeSpectrum s(center, 2.56e6, 8192, -60.0f, 13);
+    double carrier = 118103500.0;
+    addAmSignal(s, carrier, -30.0f, -45.0f);
+    double carrierBin = s.view.start + (s.view.binOf(carrier) + 0.5) * s.view.binWidth();
+    double halfWidth = channelHalfWidth(STEP_833);
+
+    CHECK_NEAR(channelPeak(s.view, 118100000.0, halfWidth, 1000.0), -30.0f, 0.01f);
+    double found = signalCenter(s.view, 118100000.0, halfWidth, 1000.0);
+    CHECK_NEAR(found, carrierBin, 1.0);
+
+    std::vector<double> channels = gridChannels({ 118000000.0, 118200000.0, STEP_833 });
+    CHECK_NEAR(channels[nearestChannel(channels, found)], 118100000.0, 0.001);
+}
+
+TEST(neighbouring_833_channels_keep_their_own_carriers) {
+    // Two transmitters on adjacent channels, each is located on its own channel
+    double center = 118000000.0;
+    FakeSpectrum s(center, 2.56e6, 8192, -60.0f, 14);
+    addAmSignal(s, 118100000.0, -30.0f, -45.0f);
+    addAmSignal(s, 118108333.3, -25.0f, -40.0f);
+    double halfWidth = channelHalfWidth(STEP_833);
+    CHECK_NEAR(signalCenter(s.view, 118100000.0, halfWidth, 1000.0), 118100000.0, s.view.binWidth());
+    CHECK_NEAR(signalCenter(s.view, 118108333.3, halfWidth, 1000.0), 118108333.3, s.view.binWidth());
+}
+
+TEST(signal_center_takes_the_strongest_of_two_carriers_in_a_channel) {
+    // The aircraft on the channel and the ground station on its offset carrier, both keyed:
+    // the centre is the stronger one, not a point between them
+    FakeSpectrum s(118000000.0, 2.56e6, 8192, -60.0f, 15);
+    s.addCarrier(118100000.0, -32.0f);
+    s.addCarrier(118103500.0, -30.0f);
+    double strongerBin = s.view.start + (s.view.binOf(118103500.0) + 0.5) * s.view.binWidth();
+    CHECK_NEAR(signalCenter(s.view, 118100000.0, channelHalfWidth(STEP_833), 1000.0), strongerBin, 1.0);
+}
+
+TEST(offset_carriers_belong_to_their_25k_channel) {
+    // 118.100 heard on its offset carriers, which are nearest to 8.33kHz neighbours
+    CHECK_NEAR(owningChannel(118105000.0, 118108333.3, STEP_833), 118100000.0, 0.001);
+    CHECK_NEAR(owningChannel(118092500.0, 118091666.7, STEP_833), 118091666.7, 0.001);
+    CHECK_NEAR(owningChannel(118107500.0, 118108333.3, STEP_833), 118108333.3, 0.001);
+    CHECK_NEAR(owningChannel(118096000.0, 118100000.0, STEP_833), 118100000.0, 0.001);
+    // An 8.33kHz station within its tolerance keeps its channel
+    CHECK_NEAR(owningChannel(118109000.0, 118108333.3, STEP_833), 118108333.3, 0.001);
+    // On the 25kHz grid the nearest channel is always right
+    CHECK_NEAR(owningChannel(118105000.0, 118100000.0, STEP_25K), 118100000.0, 0.001);
+    CHECK(carrierSearchHalfWidth(true, STEP_833) > 7500.0);
+    CHECK_NEAR(carrierSearchHalfWidth(false, STEP_833), STEP_833 / 2.0, 0.001);
+}
+
+TEST(bookmark_names_match_within_the_tolerance) {
+    std::vector<std::pair<double, std::string>> bookmarks = { { 118100000.0, "TWR" }, { 118108333.3, "APP" }, { 121500000.0, "Guard" } };
+    CHECK(bookmarkAt(bookmarks, 118100000.0, 500.0) == "TWR");
+    CHECK(bookmarkAt(bookmarks, 118108333.3, 500.0) == "APP");
+    CHECK(bookmarkAt(bookmarks, 118104000.0, 500.0).empty());
+    CHECK(bookmarkAt({}, 118100000.0, 500.0).empty());
+}
+
+TEST(auto_skips_grow_longer_except_for_priority) {
+    CHECK(autoSkipMinutes(0, false) == 2);
+    CHECK(autoSkipMinutes(1, false) == 5);
+    CHECK(autoSkipMinutes(3, false) == 30);
+    CHECK(autoSkipMinutes(9, false) == 30);
+    CHECK(autoSkipMinutes(9, true) == 2);
+}
+
 TEST(signal_center_interpolates_between_bins) {
     FakeSpectrum s(120000000.0, 2.4e6, 1500, -60.0f, 5);
     double binWidth = s.view.binWidth();
@@ -181,7 +261,7 @@ static std::vector<float> windowSNRs(int fftSize, double sampleRate, double step
     const std::vector<float>& bins = detection.bins();
     Spectrum s = { bins.data(), (int)bins.size(), start, rawBin * factor * bins.size(), center };
     std::vector<float> snrs;
-    double halfWidth = step * 0.35;
+    double halfWidth = channelHalfWidth(step);
     for (double f = center - 1.0e6; f < center + 1.0e6; f += step) {
         snrs.push_back(channelPeak(s, f, halfWidth, s.binWidth() * 1.5) - noiseFloor(s, f, 150000.0, halfWidth, s.binWidth() * 1.5, 0.3f));
     }
