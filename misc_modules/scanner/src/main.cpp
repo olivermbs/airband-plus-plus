@@ -598,7 +598,7 @@ private:
         // the retune, don't wait for the linger time
         framesSinceListen++;
         if (!confirmedAfterListen && now - receiveStart >= std::chrono::milliseconds(VERIFY_MS)) {
-            resumeSearching();
+            falseStart(receivingChannel, now);
             return;
         }
 
@@ -669,6 +669,22 @@ private:
         trackedCenter += CENTER_SMOOTHING * (center - trackedCenter);
         if (std::fabs(trackedCenter - vfoFreq) < MIN_RETUNE_HZ) { return; }
         tuneVFO(trackedCenter);
+    }
+
+    // Something the FFT sees but the squelch never lets through, like a spur or a weak carrier,
+    // would stop the scanner on every sweep. Once it is skipped for a moment, twice for longer.
+    void falseStart(int channel, Clock::time_point now) {
+        long long key = std::llround(channels[channel]);
+        auto it = falseStarts.find(key);
+        bool repeated = (it != falseStarts.end()) && (now - it->second < std::chrono::minutes(FALSE_START_MEMORY_MINUTES));
+        falseStarts[key] = now;
+        if (repeated) {
+            falseStarts.erase(key);
+            autoSkip(channel, "nothing audible", now);
+            return;
+        }
+        tempSkips[key] = now + std::chrono::seconds(FALSE_START_SKIP_S);
+        resumeSearching();
     }
 
     void autoSkip(int channel, const std::string& reason, Clock::time_point now) {
@@ -873,6 +889,8 @@ private:
     static constexpr float UNMODULATED_DB = 0.3f;
     static constexpr int CONTINUOUS_LIMIT_S = 30;
     static constexpr int AUTO_SKIP_MINUTES = 10;
+    static constexpr int FALSE_START_SKIP_S = 30;
+    static constexpr int FALSE_START_MEMORY_MINUTES = 5;
 
     // Only the flat middle of the spectrum is used, the edges roll off
     static constexpr double USABLE_BANDWIDTH = 0.85;
@@ -911,6 +929,7 @@ private:
         std::string reason;
     };
     std::map<long long, AutoSkip> autoSkips;
+    std::map<long long, Clock::time_point> falseStarts;
 
     bool running = false;
     std::string error;
