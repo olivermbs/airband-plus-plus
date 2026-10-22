@@ -10,6 +10,7 @@
 #include <RtAudio.h>
 #include <config.h>
 #include <core.h>
+#include <algorithm>
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
@@ -239,7 +240,11 @@ private:
         }
         catch (const std::exception& e) {
             flog::error("Could not open audio device {0}", e.what());
-            return false;
+            // Nothing would read the stream and the whole DSP chain would stall, the spectrum
+            // with it. Close what was opened and drain the stream instead.
+            doStop();
+            ns.start();
+            return true;
         }
 
         flog::info("RtAudio stream open");
@@ -262,9 +267,16 @@ private:
     static int callback(void* outputBuffer, void* inputBuffer, unsigned int nBufferFrames, double streamTime, RtAudioStreamStatus status, void* userData) {
         AudioSink* _this = (AudioSink*)userData;
         int count = _this->stereoPacker.out.read();
-        if (count < 0) { return 0; }
+        if (count < 0) {
+            memset(outputBuffer, 0, nBufferFrames * sizeof(dsp::stereo_t));
+            return 0;
+        }
 
-        memcpy(outputBuffer, _this->stereoPacker.out.readBuf, nBufferFrames * sizeof(dsp::stereo_t));
+        // A short read happens when the chain is restarted under a running device, the rest
+        // of the buffer would replay what the previous callback left there
+        unsigned int copied = std::min<unsigned int>(count, nBufferFrames);
+        memcpy(outputBuffer, _this->stereoPacker.out.readBuf, copied * sizeof(dsp::stereo_t));
+        memset((dsp::stereo_t*)outputBuffer + copied, 0, (nBufferFrames - copied) * sizeof(dsp::stereo_t));
         _this->stereoPacker.out.flush();
         return 0;
     }
