@@ -558,7 +558,12 @@ private:
 
         // The radio's squelch decides what is heard, so it also decides how long to stay.
         // Without a level squelch the FFT is used instead.
-        receivingSNR = channelSNR(receivingChannel);
+        // A single frame of noise now and then reaches the threshold and would keep the scanner
+        // on an empty channel, so the decision uses a smoothed SNR (averaged as power)
+        float frameSNR = channelSNR(receivingChannel);
+        float frameRatio = std::isfinite(frameSNR) ? std::pow(10.0f, frameSNR / 10.0f) : 0.0f;
+        smoothedRatio += RECEIVE_SMOOTHING * (frameRatio - smoothedRatio);
+        receivingSNR = 10.0f * std::log10(std::max<float>(smoothedRatio, 1e-6f));
         receivePeakSNR = std::max<float>(receivePeakSNR, receivingSNR);
         // Stay while either hears it: a weak reply from the ground may stay under the squelch
         // but still shows in the FFT
@@ -693,6 +698,7 @@ private:
     void listen(int channel, float snr, double center, Clock::time_point now) {
         receiveWallStart = std::chrono::system_clock::now();
         receivePeakSNR = snr;
+        smoothedRatio = std::pow(10.0f, snr / 10.0f);
         flog::info("Scanner: receiving {0:.5f} MHz, carrier at {1:.5f} MHz, {2:.1f} dB", channels[channel] / 1e6, center / 1e6, snr);
         state = State::Receiving;
         receivingChannel = channel;
@@ -855,6 +861,7 @@ private:
     static constexpr uint64_t FRAMES_AFTER_TUNE = 3;
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
+    static constexpr float RECEIVE_SMOOTHING = 0.2f;
     static constexpr double CENTER_SMOOTHING = 0.3;
     static constexpr double MIN_RETUNE_HZ = 200.0;
     // Fraction of the step a carrier may be off the channel before it is followed instead
@@ -895,6 +902,7 @@ private:
     static constexpr size_t MAX_ACTIVITY = 50;
     std::chrono::system_clock::time_point receiveWallStart;
     float receivePeakSNR = 0.0f;
+    float smoothedRatio = 1.0f;
 
     struct AutoSkip {
         Clock::time_point until;

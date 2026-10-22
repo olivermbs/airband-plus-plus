@@ -5,6 +5,7 @@
 #include "../convert/mono_to_stereo.h"
 #include "../filter/fir.h"
 #include "../taps/low_pass.h"
+#include "synchronous_am.h"
 
 namespace dsp::demod {
     template <class T>
@@ -34,6 +35,7 @@ namespace dsp::demod {
             carrierAgc.init(NULL, 1.0, agcAttack, agcDecay, 10e6, 10.0, INFINITY);
             audioAgc.init(NULL, 1.0, agcAttack, agcDecay, 10e6, 10.0, INFINITY);
             dcBlock.init(NULL, dcBlockRate);
+            syncDetector.init(samplerate);
             lpfTaps = taps::lowPass(bandwidth / 2.0, (bandwidth / 2.0) * 0.1, samplerate);
             lpf.init(NULL, lpfTaps);
 
@@ -66,6 +68,16 @@ namespace dsp::demod {
             lpf.setTaps(lpfTaps);
         }
 
+        // Synchronous detection instead of the envelope, better on weak signals
+        void setSynchronous(bool synchronous) {
+            assert(base_type::_block_init);
+            std::lock_guard<std::recursive_mutex> lck(base_type::ctrlMtx);
+            base_type::tempStop();
+            _synchronous = synchronous;
+            syncDetector.reset();
+            base_type::tempStart();
+        }
+
         void setAGCAttack(double attack) {
             assert(base_type::_block_init);
             std::lock_guard<std::recursive_mutex> lck(base_type::ctrlMtx);
@@ -95,6 +107,7 @@ namespace dsp::demod {
             carrierAgc.reset();
             audioAgc.reset();
             dcBlock.reset();
+            syncDetector.reset();
             base_type::tempStart();
         }
 
@@ -106,7 +119,7 @@ namespace dsp::demod {
             }
 
             if constexpr (std::is_same_v<T, float>) {
-                volk_32fc_magnitude_32f(out, (lv_32fc_t*)in, count);
+                detect(count, in, out);
                 dcBlock.process(count, out, out);
                 if (_agcMode == AGCMode::AUDIO) {
                     audioAgc.process(count, out, out);
@@ -117,7 +130,7 @@ namespace dsp::demod {
                 }
             }
             if constexpr (std::is_same_v<T, stereo_t>) {
-                volk_32fc_magnitude_32f(audioAgc.out.writeBuf, (lv_32fc_t*)in, count);
+                detect(count, in, audioAgc.out.writeBuf);
                 dcBlock.process(count, audioAgc.out.writeBuf, audioAgc.out.writeBuf);
                 if (_agcMode == AGCMode::AUDIO) {
                     audioAgc.process(count, audioAgc.out.writeBuf, audioAgc.out.writeBuf);
@@ -130,6 +143,14 @@ namespace dsp::demod {
             }
 
             return count;
+        }
+
+        inline void detect(int count, complex_t* in, float* out) {
+            if (_synchronous) {
+                syncDetector.process(count, in, out);
+                return;
+            }
+            volk_32fc_magnitude_32f(out, (lv_32fc_t*)in, count);
         }
 
         int run() {
@@ -145,6 +166,8 @@ namespace dsp::demod {
 
     protected:
         AGCMode _agcMode;
+        bool _synchronous = false;
+        SynchronousDetector syncDetector;
 
         double _samplerate;
         double _bandwidth;

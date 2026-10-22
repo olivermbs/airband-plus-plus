@@ -28,10 +28,14 @@ namespace demod {
             if (config->conf[name][getName()].contains("carrierAgc")) {
                 carrierAgc = config->conf[name][getName()]["carrierAgc"];
             }
+            if (config->conf[name][getName()].contains("synchronous")) {
+                synchronous = config->conf[name][getName()]["synchronous"];
+            }
             config->release();
 
             // Define structure
             demod.init(input, carrierAgc ? dsp::demod::AM<dsp::stereo_t>::AGCMode::CARRIER : dsp::demod::AM<dsp::stereo_t>::AGCMode::AUDIO, bandwidth, agcAttack / getIFSampleRate(), agcDecay / getIFSampleRate(), 100.0 / getIFSampleRate(), getIFSampleRate());
+            demod.setSynchronous(synchronous);
         }
 
         void start() { demod.start(); }
@@ -44,6 +48,12 @@ namespace demod {
                 demod.setAGCMode(carrierAgc ? dsp::demod::AM<dsp::stereo_t>::AGCMode::CARRIER : dsp::demod::AM<dsp::stereo_t>::AGCMode::AUDIO);
                 _config->acquire();
                 _config->conf[name][getName()]["carrierAgc"] = carrierAgc;
+                _config->release(true);
+            }
+            if (ImGui::Checkbox(("Synchronous##_radio_am_sync_" + name).c_str(), &synchronous)) {
+                demod.setSynchronous(synchronous);
+                _config->acquire();
+                _config->conf[name][getName()]["synchronous"] = synchronous;
                 _config->release(true);
             }
             ImGui::LeftLabel("AGC Attack");
@@ -98,6 +108,8 @@ namespace demod {
         float agcAttack = 50.0f;
         float agcDecay = 5.0f;
         bool carrierAgc = false;
+        // Locks onto the carrier, better than the envelope on weak signals
+        bool synchronous = true;
 
         std::string name;
     };
