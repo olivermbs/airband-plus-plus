@@ -1,3 +1,23 @@
+# Airband++
+
+Airband++ is a fork of [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus) by Alexandre Rouma (Ryzerth), tuned for listening to and scanning the aviation VHF band (118-137 MHz) with an RTL-SDR.
+
+What it adds on top of SDR++:
+
+* **Airband scanner**: scans the whole band on an exact 25 kHz or 8.33 kHz grid, or the bookmarks of a Frequency Manager list, several channels per tuning window, in about a second per sweep. Locks onto the strongest signal, listens on the channel, follows carriers that are off frequency, stays while the squelch is open. Exclusions, lockouts, automatic skipping of spurs and continuous broadcasts, an activity log.
+* **Auto squelch**: follows the noise floor measured from the spectrum around the channel, closes immediately on retune, clean fades instead of clicks.
+* **Audio for weak AM**: synchronous AM detection, adjustable noise reduction, a cheap 300 Hz high-pass.
+* **RTL-SDR**: a bundled, patched librtlsdr (from the RTL-SDR Blog fork, for the V4) that survives the dongle being unplugged or losing power, recovers by itself, and retunes about a third faster; retuning off the GUI thread.
+* **Performance and fixes**: waterfall uploads only new lines, UI frame rate limit, many smaller bug fixes.
+
+Build as SDR++ (see below). The unit tests are built with `-DOPT_BUILD_TESTS=ON` and run with `ctest`.
+
+Airband++ is licensed like SDR++ under the GPL-3.0, see `license`. The bundled librtlsdr is GPL-2.0-or-later, see `source_modules/rtl_sdr_source/librtlsdr`.
+
+The original SDR++ readme follows.
+
+---
+
 # SDR++, The bloat-free SDR software<br>
 
 ![Screenshot](https://i.imgur.com/Ter2MQJ.png)

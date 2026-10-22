@@ -24,7 +24,7 @@ namespace credits {
         ImGui::BeginPopupModal("Credits", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove);
 
         ImGui::PushFont(style::hugeFont);
-        ImGui::TextUnformatted("SDR++          ");
+        ImGui::TextUnformatted(APP_NAME "          ");
         ImGui::PopFont();
         ImGui::SameLine();
         ImGui::Image(icons::LOGO, imageSize);
@@ -32,7 +32,8 @@ namespace credits {
         ImGui::Spacing();
         ImGui::Spacing();
 
-        ImGui::TextUnformatted("This software is brought to you by Alexandre Rouma (ON5RYZ) with the help of\n\n");
+        ImGui::TextUnformatted(APP_NAME " is a fork of SDR++ for airband listening and scanning.\n\n");
+        ImGui::TextUnformatted("SDR++ is brought to you by Alexandre Rouma (ON5RYZ) with the help of\n\n");
 
         ImGui::Columns(4, "CreditColumns", true);
 
@@ -64,7 +65,7 @@ namespace credits {
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Spacing();
-        ImGui::TextUnformatted("SDR++ v" VERSION_STR " (Built at " __TIME__ ", " __DATE__ ")");
+        ImGui::TextUnformatted(APP_NAME ", based on SDR++ v" VERSION_STR " (Built at " __TIME__ ", " __DATE__ ")");
 
         ImGui::EndPopup();
         ImGui::PopStyleColor();
