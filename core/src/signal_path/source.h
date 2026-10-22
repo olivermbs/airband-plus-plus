@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <string>
 #include <vector>
 #include <map>
@@ -39,6 +40,11 @@ public:
 
     std::vector<std::string> getSourceNames();
 
+    // Sources that tune asynchronously report a retune the hardware didn't take, so whoever
+    // relies on the new frequency (e.g. a scanner) knows the spectrum still shows the old one
+    void reportTuneFailed() { tuneFailures++; }
+    uint64_t getTuneFailures() { return tuneFailures; }
+
     Event<std::string> onSourceRegistered;
     Event<std::string> onSourceUnregister;
     Event<std::string> onSourceUnregistered;
@@ -52,5 +58,6 @@ private:
     double currentFreq;
     double ifFreq = 0.0;
     TuningMode tuneMode = TuningMode::NORMAL;
+    std::atomic<uint64_t> tuneFailures = 0;
     dsp::stream<dsp::complex_t> nullSource;
 };

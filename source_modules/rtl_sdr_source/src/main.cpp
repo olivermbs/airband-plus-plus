@@ -423,13 +423,26 @@ private:
 
             std::lock_guard<std::mutex> devLck(devMtx);
             uint32_t newFreq = target;
-            int i;
-            for (i = 0; i < 10; i++) {
-                rtlsdr_set_center_freq(openDev, newFreq);
-                if (rtlsdr_get_center_freq(openDev) == newFreq) { break; }
+            bool tuned = false;
+            for (int i = 0; i < TUNE_ATTEMPTS && !tuned; i++) {
+                // Give the tuner's I2C bus a moment instead of hammering it
+                if (i > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(TUNE_RETRY_MS)); }
+                tuned = (rtlsdr_set_center_freq(openDev, newFreq) == 0) && (rtlsdr_get_center_freq(openDev) == newFreq);
             }
-            if (i > 1) {
-                flog::warn("RTL-SDR took {0} attempts to tune...", i);
+
+            if (tuned) {
+                failedTunes = 0;
+                continue;
+            }
+
+            flog::warn("RTL-SDR failed to tune to {0} Hz", newFreq);
+            sigpath::sourceManager.reportTuneFailed();
+
+            // A tuner that stopped answering is reset by reopening the device, like after it was lost
+            if (++failedTunes >= MAX_FAILED_TUNES) {
+                flog::error("RTL-SDR tuner stopped responding, restarting the device");
+                failedTunes = 0;
+                deviceLost = true;
             }
         }
     }
@@ -710,6 +723,11 @@ private:
     EventHandler<bool> frameHandler;
     std::atomic<bool> deviceLost = false;
     std::atomic<bool> workerFinished = true;
+
+    static constexpr int TUNE_ATTEMPTS = 5;
+    static constexpr int TUNE_RETRY_MS = 5;
+    static constexpr int MAX_FAILED_TUNES = 3;
+    int failedTunes = 0;
 
     // Serialises every librtlsdr control call while streaming
     std::mutex devMtx;

@@ -2126,20 +2126,32 @@ uint32_t rtlsdr_get_tuner_clock(void *dev)
 	return tuner_freq;
 }
 
+/* A failed I2C transfer may mean the repeater isn't in the state the cache says,
+ * the next tuner access then switches it on again explicitly */
 int rtlsdr_i2c_write_fn(void *dev, uint8_t addr, uint8_t *buf, int len)
 {
-	if (dev)
-		return rtlsdr_i2c_write(((rtlsdr_dev_t *)dev), addr, buf, len);
+	int r;
 
-	return -1;
+	if (!dev)
+		return -1;
+
+	r = rtlsdr_i2c_write(((rtlsdr_dev_t *)dev), addr, buf, len);
+	if (r < 0)
+		((rtlsdr_dev_t *)dev)->i2c_repeater = -1;
+	return r;
 }
 
 int rtlsdr_i2c_read_fn(void *dev, uint8_t addr, uint8_t *buf, int len)
 {
-	if (dev)
-		return rtlsdr_i2c_read(((rtlsdr_dev_t *)dev), addr, buf, len);
+	int r;
 
-	return -1;
+	if (!dev)
+		return -1;
+
+	r = rtlsdr_i2c_read(((rtlsdr_dev_t *)dev), addr, buf, len);
+	if (r < 0)
+		((rtlsdr_dev_t *)dev)->i2c_repeater = -1;
+	return r;
 }
 
 int rtlsdr_set_bias_tee_gpio(rtlsdr_dev_t *dev, int gpio, int on)

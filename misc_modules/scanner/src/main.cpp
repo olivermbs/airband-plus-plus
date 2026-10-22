@@ -227,7 +227,12 @@ private:
             return;
         }
 
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "Scanning %d channels", (int)channels.size());
+        if (failedRetunes > 0) {
+            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Scanning, %d retunes failed", failedRetunes);
+        }
+        else {
+            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Scanning %d channels", (int)channels.size());
+        }
         float progress = windows.empty() ? 0.0f : (float)(scanUp ? windowId + 1 : (int)windows.size() - windowId) / (float)windows.size();
         char overlay[64];
         if (lastSweepSeconds > 0.0) { snprintf(overlay, sizeof(overlay), "sweep %.2f s", lastSweepSeconds); }
@@ -435,6 +440,7 @@ private:
         windowId = scanUp ? -1 : 0;
         sweepStart = Clock::now();
         lastSweepSeconds = 0.0;
+        failedRetunes = 0;
         running = true;
         nextWindow();
     }
@@ -470,6 +476,14 @@ private:
         // Retune if the user moved the SDR or changed its sample rate
         if (gui::waterfall.getBandwidth() != plannedBandwidth || std::fabs(gui::waterfall.getCenterFrequency() - windows[windowId].center) > 1.0) {
             replanAndTune();
+            return;
+        }
+
+        // The SDR didn't take the last retune: the spectrum still shows the previous window and
+        // would be read as this one, stopping on channels where nothing happens
+        if (state != State::Receiving && sigpath::sourceManager.getTuneFailures() != tuneFailuresAtTune) {
+            failedRetunes++;
+            tuneWindow();
             return;
         }
 
@@ -804,6 +818,7 @@ private:
         const scan::Window& window = windows[windowId];
         gui::waterfall.setCenterFrequency(window.center);
         gui::waterfall.centerFreqMoved = true;
+        tuneFailuresAtTune = sigpath::sourceManager.getTuneFailures();
         sigpath::sourceManager.tune(window.center);
         tuneVFO(channels[window.first]);
 
@@ -949,6 +964,8 @@ private:
     int userFFTRate = 20;
     Clock::time_point sweepStart;
     double lastSweepSeconds = 0.0;
+    uint64_t tuneFailuresAtTune = 0;
+    int failedRetunes = 0;
     std::vector<scan::Window> windows;
     double plannedBandwidth = 0.0;
     int windowId = 0;
