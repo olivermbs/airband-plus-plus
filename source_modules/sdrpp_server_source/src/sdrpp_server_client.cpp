@@ -11,6 +11,13 @@ namespace server {
         this->sock = sock;
         output = out;
 
+        // The server is silent while stopped and the worker waits for it without a timeout. A
+        // link that dropped without closing (network gone, server host powered off) would
+        // otherwise never be noticed and keep showing as connected.
+        if (!sock->setKeepAlive(KEEPALIVE_IDLE_S, KEEPALIVE_INTERVAL_S, KEEPALIVE_PROBES)) {
+            flog::warn("Could not enable keepalive on the server connection");
+        }
+
         // Allocate buffers
         rbuffer = new uint8_t[SERVER_MAX_PACKET_SIZE];
         sbuffer = new uint8_t[SERVER_MAX_PACKET_SIZE];
@@ -233,6 +240,10 @@ namespace server {
                 flog::error("Invalid packet type: {0}", r_pkt_hdr->type);
             }
         }
+
+        // Whatever ended the worker, nobody reads the connection any more. Closing it lets the
+        // source show the disconnect instead of sending commands into a dead session.
+        sock->close();
     }
 
     int Client::getUI() {

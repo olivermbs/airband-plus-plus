@@ -3,15 +3,18 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <atomic>
 #include <map>
 
 #ifdef _WIN32
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <iphlpapi.h>
+#include <mstcpip.h>
 #else
 #include <unistd.h>
 #include <strings.h>
+#include <netinet/tcp.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -132,6 +135,16 @@ namespace net {
         SocketType type();
 
         /**
+         * Enable TCP keepalive, so a peer that silently disappeared is detected and the next
+         * receive fails instead of waiting forever. Windows always sends 10 probes.
+         * @param idleSeconds Silence before the first probe.
+         * @param intervalSeconds Time between probes.
+         * @param probes Unanswered probes before the connection is dropped.
+         * @return True on success.
+         */
+        bool setKeepAlive(int idleSeconds, int intervalSeconds, int probes);
+
+        /**
          * Send data on socket.
          * @param data Data to be sent.
          * @param len Number of bytes to be sent.
@@ -172,7 +185,7 @@ namespace net {
     private:
         Address* raddr = NULL;
         SockHandle_t sock;
-        bool open = true;
+        std::atomic<bool> open = true;
 
     };
 

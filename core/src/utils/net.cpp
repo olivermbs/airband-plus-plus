@@ -124,8 +124,8 @@ namespace net {
     }
 
     void Socket::close() {
-        if (!open) { return; }
-        open = false;
+        // Closed from several threads at once the descriptor would be closed twice
+        if (!open.exchange(false)) { return; }
         closeSocket(sock);
     }
 
@@ -135,6 +135,27 @@ namespace net {
 
     SocketType Socket::type() {
         return raddr ? SOCKET_TYPE_UDP : SOCKET_TYPE_TCP;
+    }
+
+    bool Socket::setKeepAlive(int idleSeconds, int intervalSeconds, int probes) {
+#ifdef _WIN32
+        tcp_keepalive ka;
+        ka.onoff = 1;
+        ka.keepalivetime = idleSeconds * 1000;
+        ka.keepaliveinterval = intervalSeconds * 1000;
+        DWORD returned = 0;
+        return WSAIoctl(sock, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), NULL, 0, &returned, NULL, NULL) == 0;
+#else
+        int enable = 1;
+        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable))) { return false; }
+#ifdef __APPLE__
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPALIVE, &idleSeconds, sizeof(idleSeconds))) { return false; }
+#else
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idleSeconds, sizeof(idleSeconds))) { return false; }
+#endif
+        if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &intervalSeconds, sizeof(intervalSeconds))) { return false; }
+        return setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &probes, sizeof(probes)) == 0;
+#endif
     }
 
     int Socket::send(const uint8_t* data, size_t len, const Address* dest) {

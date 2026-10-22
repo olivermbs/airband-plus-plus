@@ -15,6 +15,9 @@
 #include <chrono>
 
 #define PROTOCOL_TIMEOUT_MS             10000
+#define KEEPALIVE_IDLE_S                15
+#define KEEPALIVE_INTERVAL_S            5
+#define KEEPALIVE_PROBES                3
 
 namespace server {
     class PacketWaiter {
