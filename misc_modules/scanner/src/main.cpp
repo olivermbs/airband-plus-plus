@@ -7,6 +7,7 @@
 #include <gui/main_window.h>
 #include <signal_path/signal_path.h>
 #include <radio_interface.h>
+#include <dsp/noise_reduction/spectrum_noise.h>
 #include <utils/flog.h>
 #include <chrono>
 #include <ctime>
@@ -173,7 +174,8 @@ private:
 
     // Always the same number of rows whatever the state, so nothing below jumps around
     void drawControls(float menuWidth) {
-        bool receiving = running && state == State::Receiving;
+        // A lock only counts as receiving once something can be heard, until then it is still scanning
+        bool receiving = running && state == State::Receiving && confirmedAfterListen;
         float half = (menuWidth - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
 
         if (!running) {
@@ -550,6 +552,21 @@ private:
             snr[i] = isSkipped(channels[window.first + i], now) ? -INFINITY : channelSNR(window.first + i);
         }
 
+        // Only lock onto channels the radio's squelch would open for: its test is the power of the
+        // whole channel above the surrounding noise, a narrow carrier reaching the trigger often
+        // fails it and the lock would just be a false start
+        if (detection.frameCount() >= MIN_AVERAGED_FRAMES) {
+            float margin = radioSquelchMargin();
+            if (margin > 0.0f) {
+                double bandwidth = radioBandwidth();
+                for (int i = 0; i < count; i++) {
+                    if (snr[i] < trigger) { continue; }
+                    dsp::noise_reduction::ChannelPower power = dsp::noise_reduction::measureChannel(detectionSpectrum.data, detectionSpectrum.width, detectionSpectrum.start, detectionSpectrum.span, detectionSpectrum.dcFreq, channels[window.first + i], bandwidth);
+                    if (power.valid && power.channelDb - power.noiseDb < margin) { snr[i] = -INFINITY; }
+                }
+            }
+        }
+
         // A decision needs at least two frames averaged, one frame is too noisy
         std::vector<int> averagedFrames(count, detection.frameCount());
         int picked = scan::pickStrongest(snr, averagedFrames, MIN_AVERAGED_FRAMES, trigger);
@@ -651,6 +668,19 @@ private:
     void setRadioMuted(bool muted) {
         if (!radioAvailable()) { return; }
         core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_SET_SQUELCH_MUTE, &muted, NULL);
+    }
+
+    // Auto squelch margin in dB, 0 when the radio isn't on auto squelch
+    float radioSquelchMargin() {
+        float margin = 0.0f;
+        if (radioAvailable()) { core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_GET_SQUELCH_MARGIN, NULL, &margin); }
+        return margin;
+    }
+
+    double radioBandwidth() {
+        float bandwidth = (float)(step * 0.84);
+        if (radioAvailable()) { core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_GET_BANDWIDTH, NULL, &bandwidth); }
+        return bandwidth;
     }
 
     int radioSquelchState() {

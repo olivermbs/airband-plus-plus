@@ -1007,6 +1007,11 @@ private:
             bool* _in = (bool*)in;
             _this->setHighPass(*_in);
         }
+        else if (code == RADIO_IFACE_CMD_GET_SQUELCH_MARGIN && out) {
+            // Only meaningful in auto mode, where it is channel power above the noise in dB
+            float* _out = (float*)out;
+            *_out = (_this->squelchModes[_this->squelchModeId] == SQUELCH_MODE_AUTO) ? _this->squelchMargin : 0.0f;
+        }
         else if (code == RADIO_IFACE_CMD_SET_SQUELCH_MUTE && in) {
             // Only effective with a level squelch, the block is bypassed otherwise
             bool* _in = (bool*)in;
