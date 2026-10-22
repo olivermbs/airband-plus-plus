@@ -4,6 +4,7 @@
 #include <gui/widgets/waterfall.h>
 #include <config.h>
 #include <utils/event.h>
+#include <atomic>
 #include "radio_interface.h"
 
 enum DeemphasisMode {
@@ -29,6 +30,10 @@ namespace demod {
         virtual void start() = 0;
         virtual void stop() = 0;
         virtual void showMenu() = 0;
+
+        // State of the radio's squelch, nullptr without a level squelch. Demodulators with an AGC
+        // hold their gain while it is closed.
+        virtual void setSquelchState(const std::atomic<bool>* audible) {}
         virtual void setBandwidth(double bandwidth) = 0;
         virtual void setInput(dsp::stream<dsp::complex_t>* input) = 0;
         virtual void AFSampRateChanged(double newSR) = 0;

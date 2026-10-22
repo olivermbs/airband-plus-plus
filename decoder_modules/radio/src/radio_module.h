@@ -15,6 +15,7 @@
 #include <dsp/filter/deephasis.h>
 #include <dsp/filter/high_pass.h>
 #include <dsp/noise_reduction/audio_nr.h>
+#include <dsp/noise_reduction/squelch_gate.h>
 #include <core.h>
 #include <stdint.h>
 #include <utils/optionlist.h>
@@ -109,10 +110,12 @@ public:
 
         afChain.addBlock(&ctcss, false);
         afChain.addBlock(&resamp, true);
+        afChain.addBlock(&hpf, false);
         audioNR.init(NULL, 48000.0);
         afChain.addBlock(&audioNR, false);
-        afChain.addBlock(&hpf, false);
         afChain.addBlock(&deemp, false);
+        squelchGate.init(NULL, &powerSquelch.audible(), 48000.0);
+        afChain.addBlock(&squelchGate, false);
 
         // Initialize the sink
         srChangeHandler.ctx = this;
@@ -644,6 +647,7 @@ private:
         // Configure the HPF sample rate
         hpf.setSamplerate(audioSampleRate);
         audioNR.setSamplerate(audioSampleRate);
+        squelchGate.setSamplerate(audioSampleRate);
 
         // Configure deemphasis sample rate
         deemp.setSamplerate(audioSampleRate);
@@ -717,7 +721,9 @@ private:
         if (!selectedDemod) { return; }
 
         // Disable all squelch blocks
+        selectedDemod->setSquelchState(nullptr);
         ifChain.disableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
+        if (postProcEnabled) { afChain.disableBlock(&squelchGate, [=](dsp::stream<dsp::stereo_t>* out){ stream.setInput(out); }); }
         afChain.disableBlock(&ctcss, [=](dsp::stream<dsp::stereo_t>* out){ stream.setInput(out); });
 
         // Enable the block depending on the mode
@@ -728,13 +734,13 @@ private:
         case SQUELCH_MODE_POWER:
             // Enable the power squelch block with a fixed level
             powerSquelch.setAuto(false);
-            ifChain.enableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
+            enableLevelSquelch();
             break;
 
         case SQUELCH_MODE_AUTO:
             // Enable the power squelch block with a level following the noise floor
             powerSquelch.setAuto(true);
-            ifChain.enableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
+            enableLevelSquelch();
             break;
 
         case SQUELCH_MODE_SNR:
@@ -766,6 +772,15 @@ private:
         config.acquire();
         config.conf[name][selectedDemod->getName()]["squelchMode"] = squelchModes.key(squelchModeId);
         config.release(true);
+    }
+
+    // The squelch measures on the IF, the gate mutes the audio. Without post processing (no
+    // audio chain) the squelch gates the IF itself.
+    void enableLevelSquelch() {
+        powerSquelch.setGating(!postProcEnabled);
+        selectedDemod->setSquelchState(&powerSquelch.audible());
+        ifChain.enableBlock(&powerSquelch, [=](dsp::stream<dsp::complex_t>* out){ selectedDemod->setInput(out); });
+        if (postProcEnabled) { afChain.enableBlock(&squelchGate, [=](dsp::stream<dsp::stereo_t>* out){ stream.setInput(out); }); }
     }
 
     void setSquelchLevel(float level) {
@@ -1017,6 +1032,7 @@ private:
     dsp::multirate::RationalResampler<dsp::stereo_t> resamp;
     dsp::filter::HighPass hpf;
     dsp::noise_reduction::AudioNoiseReduction audioNR;
+    dsp::noise_reduction::SquelchGate squelchGate;
     dsp::filter::Deemphasis<dsp::stereo_t> deemp;
 
     SinkManager::Stream stream;

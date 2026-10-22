@@ -61,6 +61,10 @@ namespace dsp::loop {
             _initGain = initGain;
         }
 
+        // Keeps the current gain instead of adapting, e.g. while a squelch mutes the output: the
+        // gain then fits the last transmission instead of the noise in between
+        void setFrozen(bool frozen) { _frozen = frozen; }
+
         void reset() {
             assert(base_type::_block_init);
             std::lock_guard<std::recursive_mutex> lck(base_type::ctrlMtx);
@@ -78,8 +82,11 @@ namespace dsp::loop {
                     inAmp = fabsf(in[i]);
                 }
 
-                // Update average amplitude
-                if (inAmp != 0.0f) {
+                // Update average amplitude, unless held
+                if (_frozen) {
+                    gain = std::min<float>(_setPoint / amp, _maxGain);
+                }
+                else if (inAmp != 0.0f) {
                     amp = (inAmp > amp) ? ((amp * _invAttack) + (inAmp * _attack)) : ((amp * _invDecay) + (inAmp * _decay));
                     gain = std::min<float>(_setPoint / amp, _maxGain);
                 }
@@ -131,6 +138,7 @@ namespace dsp::loop {
         float _initGain;
 
         float amp = 1.0;
+        bool _frozen = false;
 
     };
 }

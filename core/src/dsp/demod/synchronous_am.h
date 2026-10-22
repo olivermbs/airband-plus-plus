@@ -36,6 +36,13 @@ namespace dsp::demod {
                 complex_t y = { (in[i].re * c) + (in[i].im * s), (in[i].im * c) - (in[i].re * s) };
                 out[i] = y.re;
 
+                // Silence (e.g. a gated input) carries no phase, updating on it makes the loop drift
+                // away and chirp when the signal comes back
+                if ((y.re * y.re) + (y.im * y.im) < MIN_POWER) {
+                    pcl.advancePhase();
+                    continue;
+                }
+
                 // Remaining rotation from one sample to the next is the frequency error. Averaged
                 // as a complex sum it is dominated by the coherent carrier rather than the noise.
                 complex_t step = { (y.re * last.re) + (y.im * last.im), (y.im * last.re) - (y.re * last.im) };
@@ -54,6 +61,7 @@ namespace dsp::demod {
     private:
         static constexpr float FLL_SMOOTHING = 0.02f;
         static constexpr float FLL_GAIN = 0.0005f;
+        static constexpr float MIN_POWER = 1e-12f;
 
         loop::PhaseControlLoop<float> pcl;
         complex_t last;

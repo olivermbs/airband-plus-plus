@@ -6,6 +6,7 @@
 #include "../filter/fir.h"
 #include "../taps/low_pass.h"
 #include "synchronous_am.h"
+#include <atomic>
 
 namespace dsp::demod {
     template <class T>
@@ -68,6 +69,10 @@ namespace dsp::demod {
             lpf.setTaps(lpfTaps);
         }
 
+        // While *active is false (e.g. the squelch is closed) the AGCs keep their gain instead of
+        // adapting to the noise, which made the start of the next transmission blast out
+        void setAGCHold(const std::atomic<bool>* active) { _active = active; }
+
         // Synchronous detection instead of the envelope, better on weak signals
         void setSynchronous(bool synchronous) {
             assert(base_type::_block_init);
@@ -112,6 +117,10 @@ namespace dsp::demod {
         }
 
         int process(int count, complex_t* in, T* out) {
+            bool hold = _active && !_active->load();
+            carrierAgc.setFrozen(hold);
+            audioAgc.setFrozen(hold);
+
             // Apply carrier AGC if needed
             if (_agcMode == AGCMode::CARRIER) {
                 carrierAgc.process(count, in, carrierAgc.out.writeBuf);
@@ -167,6 +176,7 @@ namespace dsp::demod {
     protected:
         AGCMode _agcMode;
         bool _synchronous = false;
+        const std::atomic<bool>* _active = nullptr;
         SynchronousDetector syncDetector;
 
         double _samplerate;

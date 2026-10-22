@@ -47,9 +47,14 @@ namespace dsp::noise_reduction {
             smoothed.assign(bins, 0.0f);
             noise.assign(bins, 0.0f);
             minimum.assign(bins, INFINITY);
+            previousMinimum.assign(bins, INFINITY);
             lastGainedPower.assign(bins, 0.0f);
+            gains.assign(bins, 1.0f);
+            strength = 0.0f;
             framesSinceMinimum = 0;
             frames = 0;
+            learnt = false;
+            previousMinimumValid = false;
             ready.clear();
         }
 
@@ -78,31 +83,54 @@ namespace dsp::noise_reduction {
             for (int i = 0; i < size; i++) { time[i] = input[i] * window[i]; }
             fftwf_execute(forward);
 
-            // Noise per band: the minimum of the smoothed power over a sliding window of about
-            // 1.5s, approximated with two halves, corrected for the minimum being under the mean
-            int windowFrames = std::max<int>(1, (int)(framesPerSecond * MIN_WINDOW_SECONDS / 2.0));
-            bool newHalf = (++framesSinceMinimum >= windowFrames);
+            // Silence (gated or muted input) says nothing about the noise
+            double framePower = 0.0;
+            for (int k = 0; k < bins; k++) { framePower += freq[k][0] * freq[k][0] + freq[k][1] * freq[k][1]; }
+            bool silent = framePower < 1e-20;
+
+            // Noise per band: the minimum of the smoothed power over the last two half windows
+            // (about 0.75 to 1.5s), so it is found in the pauses of speech and never jumps.
+            // The minimum lies under the mean of the noise, the bias corrects for that.
+            int halfWindow = std::max<int>(1, (int)(framesPerSecond * MIN_WINDOW_SECONDS / 2.0));
+            bool newHalf = !silent && (++framesSinceMinimum >= halfWindow);
             for (int k = 0; k < bins; k++) {
                 float p = freq[k][0] * freq[k][0] + freq[k][1] * freq[k][1];
-                smoothed[k] = (frames == 0) ? p : (POWER_SMOOTHING * smoothed[k] + (1.0f - POWER_SMOOTHING) * p);
-                minimum[k] = std::min<float>(minimum[k], smoothed[k]);
-                if (frames == 0) { noise[k] = smoothed[k]; }
-                noise[k] = std::min<float>(noise[k], minimum[k] * MINIMUM_BIAS);
-                if (newHalf) {
-                    noise[k] = minimum[k] * MINIMUM_BIAS;
-                    minimum[k] = smoothed[k];
+                if (!silent) {
+                    smoothed[k] = (frames == 0) ? p : (POWER_SMOOTHING * smoothed[k] + (1.0f - POWER_SMOOTHING) * p);
+                    minimum[k] = std::min<float>(minimum[k], smoothed[k]);
+                    if (newHalf) {
+                        previousMinimum[k] = minimum[k];
+                        minimum[k] = smoothed[k];
+                    }
+                    noise[k] = std::min<float>(minimum[k], previousMinimum[k]) * MINIMUM_BIAS;
                 }
 
-                // Decision directed a priori SNR and Wiener gain
+                // Nothing is reduced before a whole window was seen, the first frames may be speech
+                if (!learnt) { continue; }
+
+                // Decision directed a priori SNR and Wiener gain, never below the floor
                 float post = (noise[k] > 0.0f) ? p / noise[k] : 1e6f;
                 float prior = PRIOR_SMOOTHING * (lastGainedPower[k] / std::max<float>(noise[k], 1e-20f)) + (1.0f - PRIOR_SMOOTHING) * std::max<float>(post - 1.0f, 0.0f);
-                float gain = std::max<float>(prior / (1.0f + prior), GAIN_FLOOR);
-                lastGainedPower[k] = gain * gain * p;
-                freq[k][0] *= gain;
-                freq[k][1] *= gain;
+                gains[k] = std::max<float>(prior / (1.0f + prior), GAIN_FLOOR);
+                lastGainedPower[k] = gains[k] * gains[k] * p;
             }
+
+            if (learnt) {
+                // Neighbouring bands with very different gains sound crackly, smooth across them.
+                // The reduction fades in once learnt instead of switching on at once.
+                strength = std::min<float>(1.0f, strength + (float)(1.0 / (framesPerSecond * FADE_IN_SECONDS)));
+                for (int k = 0; k < bins; k++) {
+                    float g = gains[k];
+                    if (k > 0 && k < bins - 1) { g = 0.25f * gains[k - 1] + 0.5f * gains[k] + 0.25f * gains[k + 1]; }
+                    g = 1.0f - strength * (1.0f - g);
+                    freq[k][0] *= g;
+                    freq[k][1] *= g;
+                }
+            }
+            if (newHalf && previousMinimumValid) { learnt = true; }
+            if (newHalf) { previousMinimumValid = true; }
             if (newHalf) { framesSinceMinimum = 0; }
-            frames++;
+            if (!silent) { frames++; }
 
             fftwf_execute(backward);
             float scale = 1.0f / (float)size;
@@ -124,10 +152,12 @@ namespace dsp::noise_reduction {
         }
 
         static constexpr float POWER_SMOOTHING = 0.8f;
-        static constexpr float PRIOR_SMOOTHING = 0.98f;
-        static constexpr float MINIMUM_BIAS = 1.6f;
-        static constexpr float GAIN_FLOOR = 0.1f;
+        static constexpr float PRIOR_SMOOTHING = 0.95f;
+        static constexpr float MINIMUM_BIAS = 1.5f;
+        // -9dB: hiss is turned down, not removed, so speech can't be punched out
+        static constexpr float GAIN_FLOOR = 0.35f;
         static constexpr double MIN_WINDOW_SECONDS = 1.5;
+        static constexpr double FADE_IN_SECONDS = 0.5;
 
         int size = 0;
         int hop = 0;
@@ -148,7 +178,12 @@ namespace dsp::noise_reduction {
         std::vector<float> smoothed;
         std::vector<float> noise;
         std::vector<float> minimum;
+        std::vector<float> previousMinimum;
+        bool previousMinimumValid = false;
+        bool learnt = false;
         std::vector<float> lastGainedPower;
+        std::vector<float> gains;
+        float strength = 0.0f;
         int framesSinceMinimum = 0;
         long frames = 0;
     };

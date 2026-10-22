@@ -76,6 +76,8 @@ namespace demod {
 
         void setBandwidth(double bandwidth) { demod.setBandwidth(bandwidth); }
 
+        void setSquelchState(const std::atomic<bool>* audible) { demod.setAGCHold(audible); }
+
         void setInput(dsp::stream<dsp::complex_t>* input) { demod.setInput(input); }
 
         void AFSampRateChanged(double newSR) {}
@@ -109,7 +111,7 @@ namespace demod {
         float agcDecay = 5.0f;
         bool carrierAgc = false;
         // Locks onto the carrier, better than the envelope on weak signals
-        bool synchronous = true;
+        bool synchronous = false;
 
         std::string name;
     };

@@ -68,8 +68,18 @@ namespace dsp::noise_reduction {
             tracker.clearReferenceFloor();
         }
 
-        // Keeps the output silent while still measuring, e.g. while a scanner is searching
-        void setForceClosed(bool forceClosed) { _forceClosed = forceClosed; }
+        // Keeps it shut while still measuring, e.g. while a scanner is searching
+        void setForceClosed(bool forceClosed) {
+            _forceClosed = forceClosed;
+            if (forceClosed) { _audible = false; }
+        }
+
+        // Without gating the IF passes through unchanged and only the open state is published,
+        // for a gate on the audio side (see SquelchGate)
+        void setGating(bool gating) { _gating = gating; }
+
+        // Open and not forced closed
+        const std::atomic<bool>& audible() const { return _audible; }
 
         // Level and noise floor of the auto mode, in dB
         float getLevel() { return _lastLevel; }
@@ -100,8 +110,9 @@ namespace dsp::noise_reduction {
             lck.unlock();
             _lastLevel = levelDb;
             _open = open;
+            _audible = open && !_forceClosed;
 
-            if (open && !_forceClosed) {
+            if (!_gating || (open && !_forceClosed)) {
                 memcpy(out, in, count * sizeof(complex_t));
             }
             else {
@@ -131,6 +142,8 @@ namespace dsp::noise_reduction {
         std::atomic<float> _noiseFloor = -INFINITY;
         std::atomic<bool> _open = false;
         std::atomic<bool> _forceClosed = false;
+        std::atomic<bool> _audible = false;
+        std::atomic<bool> _gating = true;
                 
     };
 }

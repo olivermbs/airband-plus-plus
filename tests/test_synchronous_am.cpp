@@ -90,4 +90,16 @@ TEST(stays_finite_on_noise_only) {
     for (float v : y) { CHECK(std::isfinite(v)); }
 }
 
+TEST(holds_frequency_through_silence) {
+    auto x = amSignal((int)(0.5 * FS), 800.0, 0.5, 0.01, 4);
+    SynchronousDetector d;
+    d.init(FS);
+    std::vector<float> y(x.size());
+    d.process((int)x.size(), x.data(), y.data());
+    std::vector<complex_t> silence((int)(0.5 * FS), complex_t{ 0.0f, 0.0f });
+    std::vector<float> z(silence.size());
+    d.process((int)silence.size(), silence.data(), z.data());
+    CHECK_NEAR(d.frequency() * FS / (2.0 * M_PI), 800.0, 5.0);
+}
+
 int main() { return runTests(); }
