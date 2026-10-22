@@ -1,0 +1,74 @@
+name: Build Airband++
+
+on:
+    push:
+        branches: [master]
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    build_macos:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                - runner: macos-15
+                  arch: arm
+                - runner: macos-15-intel
+                  arch: intel
+        runs-on: ${{ matrix.runner }}
+
+        steps:
+        - uses: actions/checkout@v4
+
+        - name: Install dependencies
+          run: brew install pkg-config libusb fftw glfw portaudio zstd volk
+
+        # The RTL-SDR driver is bundled (source_modules/rtl_sdr_source/librtlsdr), only libusb is needed for it
+        - name: Configure
+          run: >
+              cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+              -DUSE_BUNDLE_DEFAULTS=ON -DOPT_BUILD_TESTS=ON
+              -DOPT_BUILD_AIRSPY_SOURCE=OFF -DOPT_BUILD_AIRSPYHF_SOURCE=OFF -DOPT_BUILD_AUDIO_SOURCE=OFF
+              -DOPT_BUILD_HACKRF_SOURCE=OFF -DOPT_BUILD_PLUTOSDR_SOURCE=OFF -DOPT_BUILD_AUDIO_SINK=OFF
+              -DOPT_BUILD_PORTAUDIO_SINK=ON -DOPT_BUILD_DISCORD_PRESENCE=OFF -DOPT_BUILD_SCANNER=ON
+
+        - name: Build
+          run: cmake --build build -j4
+
+        - name: Test
+          run: ctest --test-dir build --output-on-failure
+
+        - name: Create the app bundle
+          run: |
+              sh make_macos_bundle.sh build ./Airband++.app
+              ditto -c -k --keepParent Airband++.app airbandpp_macos_${{ matrix.arch }}.zip
+
+        - uses: actions/upload-artifact@v4
+          with:
+              name: airbandpp_macos_${{ matrix.arch }}
+              path: airbandpp_macos_${{ matrix.arch }}.zip
+
+    # Like SDR++, a single rolling release replaced on every push to master
+    update_nightly_release:
+        needs: build_macos
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        runs-on: ubuntu-latest
+
+        steps:
+        - uses: actions/download-artifact@v4
+          with:
+              path: dist
+              merge-multiple: true
+
+        - name: Replace the nightly release
+          env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+              gh release delete nightly -R ${{ github.repository }} --cleanup-tag -y || true
+              gh release create nightly dist/*.zip -R ${{ github.repository }} --target ${{ github.sha }} --prerelease \
+                  --title "Airband++ Nightly" \
+                  --notes "Built from ${{ github.sha }}. macOS only: airbandpp_macos_arm.zip for Apple Silicon, airbandpp_macos_intel.zip for Intel Macs. Not notarized: right-click Airband++ and choose Open the first time."
