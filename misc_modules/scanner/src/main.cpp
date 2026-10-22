@@ -1325,7 +1325,9 @@ private:
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
     static constexpr float RECEIVE_SMOOTHING = 0.2f;
-    static constexpr double CENTER_SMOOTHING = 0.3;
+    // Per frame, about 170ms at the scanner's 60 frames per second: the carrier estimate of a
+    // weak signal wobbles from frame to frame, the VFO shouldn't follow the wobble
+    static constexpr double CENTER_SMOOTHING = 0.1;
     // How far the VFO may be off the carrier before it is moved, a 6kHz filter leaves room
     // for this and the voice still fits
     static constexpr double CARRIER_FOLLOW_HZ = 300.0;

@@ -1146,8 +1146,10 @@ private:
     const double MAX_SQUELCH = 0.0;
     const float DEFAULT_SQUELCH_MARGIN = 5.0f;
 
-    // Auto squelch reference from the spectrum
-    static constexpr double SQUELCH_RETUNE_HZ = 10.0;
+    // Auto squelch reference from the spectrum. A move further than this is another channel and
+    // the squelch starts over; less than the narrowest spacing (8.33kHz), more than a carrier
+    // being followed moves within its channel, where closing it would chop the audio.
+    static constexpr double SQUELCH_RETUNE_HZ = 4000.0;
     static constexpr int SQUELCH_SPECTRUM_SETTLE_MS = 100;
     static constexpr float SQUELCH_EMPTY_CHANNEL_DB = 1.5f;
     static constexpr float SQUELCH_CALIBRATION_SMOOTHING = 0.05f;
