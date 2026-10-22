@@ -148,6 +148,70 @@ namespace scan {
         int frames = 0;
     };
 
+    // Measures the energy beside a carrier relative to the noise, accumulated over frames.
+    // Voice puts energy a few hundred Hz to 3kHz either side of the carrier, an unmodulated
+    // carrier (a spur, a birdie, a stuck transmitter) leaves only noise there.
+    class ModulationMeter {
+    public:
+        void reset() {
+            sideband = 0.0;
+            noise = 0.0;
+            frames = 0;
+        }
+
+        void add(const Spectrum& s, double carrier) {
+            // The FFT window spreads a carrier over a few bins, those must not count as modulation
+            double sidebandStart = std::max<double>(MIN_SIDEBAND_OFFSET, CARRIER_BINS * s.binWidth());
+
+            double sidebandSum = 0.0;
+            int sidebandCount = 0;
+            std::vector<float> reference;
+            int low = std::max<int>(0, s.binOf(carrier - NOISE_END));
+            int high = std::min<int>(s.width - 1, s.binOf(carrier + NOISE_END));
+            for (int i = low; i <= high; i++) {
+                double offset = std::fabs(s.start + ((double)i + 0.5) * s.binWidth() - carrier);
+                float power = std::exp(s.data[i] * DB_TO_LN);
+                if (offset >= sidebandStart && offset <= SIDEBAND_END) {
+                    sidebandSum += power;
+                    sidebandCount++;
+                }
+                else if (offset >= NOISE_START) {
+                    reference.push_back(power);
+                }
+            }
+            if (sidebandCount == 0 || reference.size() < 16) { return; }
+
+            // Median of exponentially distributed noise power is ln(2) times its mean, and
+            // unlike the mean it ignores other signals in the reference range
+            size_t mid = reference.size() / 2;
+            std::nth_element(reference.begin(), reference.begin() + mid, reference.end());
+            sideband += sidebandSum / sidebandCount;
+            noise += reference[mid] / LN2;
+            frames++;
+        }
+
+        int frameCount() const { return frames; }
+
+        // Unknown counts as modulated, nothing should be skipped without evidence
+        float sidebandToNoiseDb() const {
+            if (frames == 0) { return INFINITY; }
+            return 10.0f * std::log10(sideband / noise);
+        }
+
+    private:
+        static constexpr float DB_TO_LN = 0.230258509f;
+        static constexpr double LN2 = 0.693147181;
+        static constexpr double MIN_SIDEBAND_OFFSET = 400.0;
+        static constexpr double CARRIER_BINS = 5.0;
+        static constexpr double SIDEBAND_END = 3000.0;
+        static constexpr double NOISE_START = 10000.0;
+        static constexpr double NOISE_END = 60000.0;
+
+        double sideband = 0.0;
+        double noise = 0.0;
+        int frames = 0;
+    };
+
     // Strongest bin within the channel, ignoring the bins around DC
     inline float channelPeak(const Spectrum& spectrum, double freq, double halfWidth, double dcGuard) {
         int low = std::max<int>(0, spectrum.binOf(freq - halfWidth));

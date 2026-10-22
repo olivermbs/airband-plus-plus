@@ -195,6 +195,7 @@ private:
         }
 
         _this->drawWarnings();
+        _this->drawAutoSkips();
         _this->drawExclusions();
     }
 
@@ -250,6 +251,28 @@ private:
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "FFT too coarse (%.1f kHz/bin)", rawBinWidth / 1e3);
             ImGui::TextWrapped("Increase the FFT size in the display settings.");
         }
+    }
+
+    void drawAutoSkips() {
+        if (autoSkips.empty()) { return; }
+        std::string header = "Auto-skipped (" + std::to_string(autoSkips.size()) + ")##scanner_autoskips_" + name;
+        if (!ImGui::CollapsingHeader(header.c_str())) { return; }
+
+        long long lockOut = -1;
+        long long unskip = -1;
+        for (auto& [freq, skip] : autoSkips) {
+            ImGui::Text("%.5f MHz, %s", (double)freq / 1e6, skip.reason.c_str());
+            if (ImGui::SmallButton(("Lock Out##scanner_auto_lock_" + std::to_string(freq)).c_str())) { lockOut = freq; }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(("Scan Again##scanner_auto_unskip_" + std::to_string(freq)).c_str())) { unskip = freq; }
+        }
+
+        if (lockOut >= 0) {
+            lockouts.insert(lockOut);
+            autoSkips.erase(lockOut);
+            saveConfig();
+        }
+        if (unskip >= 0) { autoSkips.erase(unskip); }
     }
 
     void drawExclusions() {
@@ -516,7 +539,25 @@ private:
             lastSignal = now;
             confirmedAfterListen = true;
         }
+        else {
+            lastAbsent = now;
+        }
+        if (receivingSNR >= trigger - RECEIVE_HYSTERESIS) {
+            modulation.add(fineSpectrum, carrierCenter(receivingChannel));
+        }
         if (hold) { return; }
+
+        // A carrier with nothing beside it is a spur or a stuck transmitter, not a transmission
+        if (now - receiveStart >= std::chrono::milliseconds(UNMODULATED_CHECK_MS) && modulation.frameCount() >= MIN_MODULATION_FRAMES && modulation.sidebandToNoiseDb() < UNMODULATED_DB) {
+            autoSkip(receivingChannel, "unmodulated carrier", now);
+            return;
+        }
+
+        // ATC talks in short transmissions, something that never pauses is a broadcast like ATIS
+        if (now - lastAbsent >= std::chrono::seconds(CONTINUOUS_LIMIT_S)) {
+            autoSkip(receivingChannel, "continuous signal", now);
+            return;
+        }
 
         // Nothing in the frames after locking on: it was a noise spike or a stale frame from before
         // the retune, don't wait for the linger time
@@ -595,9 +636,22 @@ private:
         tuneVFO(trackedCenter);
     }
 
+    void autoSkip(int channel, const std::string& reason, Clock::time_point now) {
+        long long key = std::llround(channels[channel]);
+        flog::info("Scanner: skipping {0:.5f} MHz for a while, {1}", channels[channel] / 1e6, reason);
+        autoSkips[key] = { now + std::chrono::minutes(AUTO_SKIP_MINUTES), reason };
+        resumeSearching();
+    }
+
     bool isSkipped(double freq, Clock::time_point now) {
         long long key = std::llround(freq);
         if (lockouts.count(key)) { return true; }
+
+        auto autoIt = autoSkips.find(key);
+        if (autoIt != autoSkips.end()) {
+            if (autoIt->second.until > now) { return true; }
+            autoSkips.erase(autoIt);
+        }
 
         auto it = tempSkips.find(key);
         if (it == tempSkips.end()) { return false; }
@@ -623,6 +677,8 @@ private:
         // carrier that is really off the channel is followed.
         followingCarrier = std::fabs(center - channels[channel]) > step * CARRIER_FOLLOW_OFFSET;
         trackedCenter = followingCarrier ? center : channels[channel];
+        modulation.reset();
+        lastAbsent = now;
         tuneVFO(trackedCenter);
         setRadioMuted(false);
     }
@@ -769,6 +825,11 @@ private:
     static constexpr double MIN_RETUNE_HZ = 200.0;
     // Fraction of the step a carrier may be off the channel before it is followed instead
     static constexpr double CARRIER_FOLLOW_OFFSET = 0.25;
+    static constexpr int UNMODULATED_CHECK_MS = 4000;
+    static constexpr int MIN_MODULATION_FRAMES = 30;
+    static constexpr float UNMODULATED_DB = 0.3f;
+    static constexpr int CONTINUOUS_LIMIT_S = 30;
+    static constexpr int AUTO_SKIP_MINUTES = 10;
 
     // Only the flat middle of the spectrum is used, the edges roll off
     static constexpr double USABLE_BANDWIDTH = 0.85;
@@ -789,6 +850,12 @@ private:
     int maxListenTime = 120;
     std::set<long long> lockouts;
     std::map<long long, Clock::time_point> tempSkips;
+
+    struct AutoSkip {
+        Clock::time_point until;
+        std::string reason;
+    };
+    std::map<long long, AutoSkip> autoSkips;
 
     bool running = false;
     std::string error;
@@ -831,6 +898,8 @@ private:
     double vfoFreq = 0.0;
     double trackedCenter = 0.0;
     bool followingCarrier = false;
+    scan::ModulationMeter modulation;
+    Clock::time_point lastAbsent;
     Clock::time_point receiveStart;
     Clock::time_point lastSignal;
 };
