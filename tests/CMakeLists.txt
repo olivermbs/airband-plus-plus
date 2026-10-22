@@ -39,3 +39,7 @@ add_test(NAME recording COMMAND test_recording)
 add_executable(test_speech_processor test_speech_processor.cpp)
 target_include_directories(test_speech_processor PRIVATE "../core/src")
 add_test(NAME speech_processor COMMAND test_speech_processor)
+
+add_executable(test_transcript test_transcript.cpp)
+target_include_directories(test_transcript PRIVATE "../misc_modules/scanner/src")
+add_test(NAME transcript COMMAND test_transcript)

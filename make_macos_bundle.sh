@@ -74,6 +74,14 @@ bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/misc_modules/r
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/misc_modules/rigctl_server/rigctl_server.dylib
 bundle_install_binary $BUNDLE $BUNDLE/Contents/Plugins $BUILD_DIR/misc_modules/scanner/scanner.dylib
 
+# ggml's backends (CPU, Metal) for the scanner's speech recognition, loaded at runtime from Frameworks
+GGML_PREFIX=$(brew --prefix ggml 2>/dev/null || true)
+if [ -n "$GGML_PREFIX" ] && [ -d "$GGML_PREFIX/libexec" ]; then
+    for BACKEND in $GGML_PREFIX/libexec/libggml-*.so; do
+        bundle_install_binary $BUNDLE $BUNDLE/Contents/Frameworks $BACKEND
+    done
+fi
+
 # ========================= Finalize =========================
 
 # Sign the app
