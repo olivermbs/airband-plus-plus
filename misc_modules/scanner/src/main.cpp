@@ -9,7 +9,10 @@
 #include <radio_interface.h>
 #include <utils/flog.h>
 #include <chrono>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <set>
 #include "channel_scan.h"
@@ -73,6 +76,8 @@ private:
         ScannerModule* _this = (ScannerModule*)ctx;
         float menuWidth = ImGui::GetContentRegionAvail().x;
         bool changed = false;
+
+        _this->drawControls(menuWidth);
 
         if (_this->running) { ImGui::BeginDisabled(); }
         ImGui::BeginTable(("scanner_preset_table" + _this->name).c_str(), 2);
@@ -162,81 +167,103 @@ private:
         }
         if (changed) { _this->saveConfig(); }
 
-        ImGui::BeginTable(("scanner_bottom_btn_table" + _this->name).c_str(), 2);
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        if (ImGui::Button(("<<##scanner_back_" + _this->name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-            _this->scanUp = false;
-            _this->skipAhead();
-        }
-        ImGui::TableSetColumnIndex(1);
-        if (ImGui::Button((">>##scanner_forw_" + _this->name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-            _this->scanUp = true;
-            _this->skipAhead();
-        }
-        ImGui::EndTable();
-
-        if (!_this->running) {
-            if (ImGui::Button(("Start##scanner_start_" + _this->name).c_str(), ImVec2(menuWidth, 0))) {
-                _this->start();
-            }
-            if (!_this->error.empty()) {
-                ImGui::TextColored(ImVec4(1, 0, 0, 1), "%s", _this->error.c_str());
-            }
-            else {
-                ImGui::TextUnformatted("Status: Idle");
-            }
-        }
-        else {
-            if (ImGui::Button(("Stop##scanner_start_" + _this->name).c_str(), ImVec2(menuWidth, 0))) {
-                _this->stop("");
-            }
-            _this->drawStatus();
-        }
-
         _this->drawWarnings();
+        _this->drawActivity();
         _this->drawAutoSkips();
         _this->drawExclusions();
     }
 
-    void drawStatus() {
-        if (state == State::Receiving) {
-            double freq = channels[receivingChannel];
+    // Always the same number of rows whatever the state, so nothing below jumps around
+    void drawControls(float menuWidth) {
+        bool receiving = running && state == State::Receiving;
+        float half = (menuWidth - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+
+        if (!running) {
+            if (ImGui::Button(("Start##scanner_start_" + name).c_str(), ImVec2(half, 0))) { start(); }
+        }
+        else {
+            if (ImGui::Button(("Stop##scanner_start_" + name).c_str(), ImVec2(half, 0))) { stop(""); }
+        }
+        ImGui::SameLine();
+        if (!receiving) { ImGui::BeginDisabled(); }
+        if (hold) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.4f, 0.0f, 1.0f)); }
+        if (ImGui::Button((std::string(hold ? "Holding" : "Hold") + "##scanner_hold_" + name).c_str(), ImVec2(half, 0))) { hold = !hold; }
+        if (hold) { ImGui::PopStyleColor(); }
+
+        double freq = receiving ? channels[receivingChannel] : 0.0;
+        if (ImGui::Button(("Skip##scanner_skip_" + name).c_str(), ImVec2(half, 0))) {
+            tempSkips[std::llround(freq)] = Clock::now() + std::chrono::seconds(SKIP_TIME_S);
+            resumeSearching();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(("Lock Out##scanner_lockout_" + name).c_str(), ImVec2(half, 0))) {
+            lockouts.insert(std::llround(freq));
+            saveConfig();
+            resumeSearching();
+        }
+        if (!receiving) { ImGui::EndDisabled(); }
+
+        if (ImGui::Button(("<<##scanner_back_" + name).c_str(), ImVec2(half, 0))) {
+            scanUp = false;
+            skipAhead();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button((">>##scanner_forw_" + name).c_str(), ImVec2(half, 0))) {
+            scanUp = true;
+            skipAhead();
+        }
+
+        // Status: two lines in every state
+        if (!running) {
+            if (!error.empty()) { ImGui::TextColored(ImVec4(1, 0, 0, 1), "%s", error.c_str()); }
+            else { ImGui::TextUnformatted("Idle"); }
+            ImGui::TextDisabled("%d excluded", (int)lockouts.size());
+            return;
+        }
+
+        if (receiving) {
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "Receiving %.5f MHz", freq / 1e6);
-            ImGui::Text("SNR %.1f dB, %s", receivingSNR, followingCarrier ? "following off-channel carrier" : "on channel");
-            int squelch = radioSquelchState();
-            if (squelch == RADIO_IFACE_SQUELCH_NONE) {
-                ImGui::TextDisabled("Holding on the FFT, use Auto squelch to hold on what you hear");
-            }
-
-            ImGui::BeginTable(("scanner_rx_btn_table" + name).c_str(), 2);
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            if (ImGui::Button(("Skip##scanner_skip_" + name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-                tempSkips[std::llround(freq)] = Clock::now() + std::chrono::seconds(SKIP_TIME_S);
-                resumeSearching();
-            }
-            ImGui::TableSetColumnIndex(1);
-            if (ImGui::Button(("Lock Out##scanner_lockout_" + name).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
-                lockouts.insert(std::llround(freq));
-                saveConfig();
-                resumeSearching();
-            }
-            ImGui::EndTable();
-
-            ImGui::Checkbox(("Hold##scanner_hold_" + name).c_str(), &hold);
+            ImGui::Text("SNR %.1f dB, %s", receivingSNR, followingCarrier ? "off-channel carrier" : "on channel");
             return;
         }
 
-        if (state == State::Tuning) {
-            ImGui::TextColored(ImVec4(0, 1, 1, 1), "Tuning window %d/%d", windowId + 1, (int)windows.size());
-            return;
-        }
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "Scanning %d channels", (int)channels.size());
+        float progress = windows.empty() ? 0.0f : (float)(scanUp ? windowId + 1 : (int)windows.size() - windowId) / (float)windows.size();
+        char overlay[64];
+        if (lastSweepSeconds > 0.0) { snprintf(overlay, sizeof(overlay), "sweep %.2f s", lastSweepSeconds); }
+        else { snprintf(overlay, sizeof(overlay), "first sweep"); }
+        ImGui::ProgressBar(progress, ImVec2(menuWidth, 0), overlay);
+    }
 
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "Scanning window %d/%d", windowId + 1, (int)windows.size());
-        if (lastSweepSeconds > 0.0) {
-            ImGui::Text("%d channels, full sweep %.2f s", (int)channels.size(), lastSweepSeconds);
+    // What was received, newest first, also written to scanner_activity.csv
+    void drawActivity() {
+        if (activity.empty()) { return; }
+        std::string header = "Activity (" + std::to_string(activity.size()) + ")##scanner_activity_" + name;
+        if (!ImGui::CollapsingHeader(header.c_str())) { return; }
+        for (auto it = activity.rbegin(); it != activity.rend(); it++) {
+            ImGui::Text("%s  %.5f MHz  %4.1fs  %4.1f dB", it->time.c_str(), it->freq / 1e6, it->seconds, it->peakSNR);
         }
+    }
+
+    void logActivity(Clock::time_point now) {
+        Activity entry;
+        entry.freq = channels[receivingChannel];
+        entry.seconds = std::chrono::duration<double>(now - receiveStart).count();
+        entry.peakSNR = receivePeakSNR;
+        char buf[32];
+        std::time_t t = std::chrono::system_clock::to_time_t(receiveWallStart);
+        std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+        entry.time = buf;
+
+        activity.push_back(entry);
+        if (activity.size() > MAX_ACTIVITY) { activity.erase(activity.begin()); }
+
+        std::string path = core::args["root"].s() + "/scanner_activity.csv";
+        bool exists = std::filesystem::exists(path);
+        std::ofstream file(path, std::ios::app);
+        if (!exists) { file << "date,time,frequency_mhz,duration_s,peak_snr_db\n"; }
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d,%H:%M:%S", std::localtime(&t));
+        file << buf << "," << std::fixed << std::setprecision(5) << entry.freq / 1e6 << "," << std::setprecision(1) << entry.seconds << "," << entry.peakSNR << "\n";
     }
 
     void drawWarnings() {
@@ -413,6 +440,7 @@ private:
     }
 
     void stop(const std::string& reason) {
+        if (running && state == State::Receiving && confirmedAfterListen) { logActivity(Clock::now()); }
         if (running && userFFTRate < SCAN_FFT_RATE) { sigpath::iqFrontEnd.setFFTRate(userFFTRate); }
         if (running) { setRadioMuted(false); }
         running = false;
@@ -531,6 +559,7 @@ private:
         // The radio's squelch decides what is heard, so it also decides how long to stay.
         // Without a level squelch the FFT is used instead.
         receivingSNR = channelSNR(receivingChannel);
+        receivePeakSNR = std::max<float>(receivePeakSNR, receivingSNR);
         // Stay while either hears it: a weak reply from the ground may stay under the squelch
         // but still shows in the FFT
         int squelch = radioSquelchState();
@@ -662,6 +691,8 @@ private:
     }
 
     void listen(int channel, float snr, double center, Clock::time_point now) {
+        receiveWallStart = std::chrono::system_clock::now();
+        receivePeakSNR = snr;
         flog::info("Scanner: receiving {0:.5f} MHz, carrier at {1:.5f} MHz, {2:.1f} dB", channels[channel] / 1e6, center / 1e6, snr);
         state = State::Receiving;
         receivingChannel = channel;
@@ -698,7 +729,10 @@ private:
     }
 
     void enterSearching() {
-        if (state == State::Receiving) { setRadioMuted(true); }
+        if (state == State::Receiving) {
+            setRadioMuted(true);
+            if (confirmedAfterListen) { logActivity(Clock::now()); }
+        }
         state = State::Searching;
         searchFrames = 0;
         detection.reset();
@@ -850,6 +884,17 @@ private:
     int maxListenTime = 120;
     std::set<long long> lockouts;
     std::map<long long, Clock::time_point> tempSkips;
+
+    struct Activity {
+        std::string time;
+        double freq;
+        double seconds;
+        float peakSNR;
+    };
+    std::vector<Activity> activity;
+    static constexpr size_t MAX_ACTIVITY = 50;
+    std::chrono::system_clock::time_point receiveWallStart;
+    float receivePeakSNR = 0.0f;
 
     struct AutoSkip {
         Clock::time_point until;
