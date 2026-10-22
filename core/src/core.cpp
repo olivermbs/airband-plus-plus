@@ -248,7 +248,7 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["manualOffset"] = 0.0;
     defConfig["showMenu"] = true;
     defConfig["showWaterfall"] = true;
-    defConfig["source"] = "";
+    defConfig["source"] = "RTL-SDR";
     defConfig["decimation"] = 1;
     defConfig["iqCorrection"] = true;
     defConfig["invertIQ"] = false;
