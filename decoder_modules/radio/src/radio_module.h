@@ -16,6 +16,7 @@
 #include <dsp/filter/high_pass.h>
 #include <dsp/noise_reduction/audio_nr.h>
 #include <dsp/noise_reduction/squelch_gate.h>
+#include <dsp/audio/speech_processor.h>
 #include <core.h>
 #include <stdint.h>
 #include <utils/optionlist.h>
@@ -116,6 +117,9 @@ public:
         afChain.addBlock(&deemp, false);
         squelchGate.init(NULL, &powerSquelch.audible(), 48000.0);
         afChain.addBlock(&squelchGate, false);
+        // After the gate: it holds its level through the gate's silence
+        speech.init(NULL, 48000.0);
+        afChain.addBlock(&speech, false);
 
         // Initialize the sink
         srChangeHandler.ctx = this;
@@ -362,6 +366,13 @@ private:
             if (!_this->audioNREnabled) { style::endDisabled(); }
         }
 
+        // Voice EQ, leveler and limiter
+        if (_this->clarityAllowed) {
+            if (ImGui::Checkbox(("Clarity (voice EQ and leveler)##_radio_clarity_" + _this->name).c_str(), &_this->clarityEnabled)) {
+                _this->setClarity(_this->clarityEnabled);
+            }
+        }
+
         // Demodulator specific menu
         _this->selectedDemod->showMenu();
 
@@ -490,7 +501,8 @@ private:
         squelchMargin = DEFAULT_SQUELCH_MARGIN;
         ctcssToneId = ctcssTones.valueId(dsp::noise_reduction::CTCSS_TONE_67Hz);
         highPass = selectedDemod->getDefaultHighPass();
-        audioNREnabled = false;
+        audioNREnabled = selectedDemod->getDefaultAudioNR();
+        clarityEnabled = selectedDemod->getDefaultClarity();
 
         postProcEnabled = selectedDemod->getPostProcEnabled();
         FMIFNRAllowed = selectedDemod->getFMIFNRAllowed();
@@ -501,6 +513,7 @@ private:
         highPassAllowed = selectedDemod->getHighPassAllowed();
         // Not for broadcast FM, it is meant for voice and would muddle stereo music
         audioNRAllowed = selectedDemod->getPostProcEnabled() && selectedDemodID != RADIO_DEMOD_WFM;
+        clarityAllowed = audioNRAllowed;
         nbEnabled = false;
         nbLevel = 0.0f;
         double ifSamplerate = selectedDemod->getIFSampleRate();
@@ -533,6 +546,9 @@ private:
         }
         if (config.conf[name][selectedDemod->getName()].contains("audioNR")) {
             audioNREnabled = config.conf[name][selectedDemod->getName()]["audioNR"];
+        }
+        if (config.conf[name][selectedDemod->getName()].contains("clarity")) {
+            clarityEnabled = config.conf[name][selectedDemod->getName()]["clarity"];
         }
         audioNRStrength = DEFAULT_AUDIO_NR_STRENGTH;
         if (config.conf[name][selectedDemod->getName()].contains("audioNRStrength")) {
@@ -610,6 +626,7 @@ private:
             setHighPass(highPass && highPassAllowed);
             setAudioNRStrength(audioNRStrength);
             setAudioNR(audioNREnabled && audioNRAllowed);
+            setClarity(clarityEnabled && clarityAllowed);
 
             // Configure deemphasis
             setDeemphasisMode(deempModes[deempId]);
@@ -660,6 +677,7 @@ private:
         hpf.setSamplerate(audioSampleRate);
         audioNR.setSamplerate(audioSampleRate);
         squelchGate.setSamplerate(audioSampleRate);
+        speech.setSamplerate(audioSampleRate);
 
         // Configure deemphasis sample rate
         deemp.setSamplerate(audioSampleRate);
@@ -683,6 +701,16 @@ private:
 
         config.acquire();
         config.conf[name][selectedDemod->getName()]["audioNR"] = enabled;
+        config.release(true);
+    }
+
+    void setClarity(bool enabled) {
+        clarityEnabled = enabled;
+        if (!postProcEnabled || !selectedDemod) { return; }
+        afChain.setBlockEnabled(&speech, enabled, [=](dsp::stream<dsp::stereo_t>* out){ stream.setInput(out); });
+
+        config.acquire();
+        config.conf[name][selectedDemod->getName()]["clarity"] = enabled;
         config.release(true);
     }
 
@@ -1059,6 +1087,7 @@ private:
     dsp::filter::HighPass hpf;
     dsp::noise_reduction::AudioNoiseReduction audioNR;
     dsp::noise_reduction::SquelchGate squelchGate;
+    dsp::audio::SpeechProcessor speech;
     dsp::filter::Deemphasis<dsp::stereo_t> deemp;
 
     SinkManager::Stream stream;
@@ -1092,6 +1121,9 @@ private:
     float audioNRStrength = 50.0f;
     const float DEFAULT_AUDIO_NR_STRENGTH = 50.0f;
     bool audioNRAllowed = false;
+
+    bool clarityEnabled = false;
+    bool clarityAllowed = false;
 
     int deempId = 0;
     bool deempAllowed;

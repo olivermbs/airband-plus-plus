@@ -87,10 +87,15 @@ namespace demod {
         const char* getName() { return "AM"; }
         double getIFSampleRate() { return 15000.0; }
         double getAFSampleRate() { return getIFSampleRate(); }
-        // Airband: an 8.33kHz channel plus room for aircraft that are off frequency
-        double getDefaultBandwidth() { return 7000.0; }
+        // Airband voice is 300Hz to 2.5-3kHz either side of the carrier, the scanner keeps the
+        // VFO on the carrier
+        double getDefaultBandwidth() { return 6000.0; }
         SquelchMode getDefaultSquelchMode() { return SQUELCH_MODE_AUTO; }
         bool getDefaultHighPass() { return true; }
+        // Measured on airband: about 1.5dB clearer overall and 2.5dB in the consonants (2-3kHz)
+        bool getDefaultAudioNR() { return true; }
+        // Voice EQ, leveler and limiter, chosen by ear on airband recordings
+        bool getDefaultClarity() { return true; }
         double getMinBandwidth() { return 1000.0; }
         double getMaxBandwidth() { return getIFSampleRate(); }
         bool getBandwidthLocked() { return false; }
@@ -113,8 +118,9 @@ namespace demod {
         float agcAttack = 50.0f;
         float agcDecay = 5.0f;
         bool carrierAgc = true;
-        // Locks onto the carrier, better than the envelope on weak signals
-        bool synchronous = false;
+        // Locks onto the carrier, better than the envelope on weak signals: same audio on strong
+        // ones, far lower noise peaks and no threshold breakdown on weak ones
+        bool synchronous = true;
 
         std::string name;
     };
