@@ -125,9 +125,9 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["fftHeight"] = 300;
     defConfig["fftRate"] = 20;
     defConfig["uiFrameRateLimit"] = 60;
-    defConfig["fftSize"] = 65536;
+    defConfig["fftSize"] = 8192;
     defConfig["fftWindow"] = 2;
-    defConfig["frequency"] = 100000000.0;
+    defConfig["frequency"] = 125000000.0;
     defConfig["fullWaterfallUpdate"] = false;
     defConfig["max"] = 0.0;
     defConfig["maximized"] = false;
@@ -250,7 +250,7 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["showWaterfall"] = true;
     defConfig["source"] = "";
     defConfig["decimation"] = 1;
-    defConfig["iqCorrection"] = false;
+    defConfig["iqCorrection"] = true;
     defConfig["invertIQ"] = false;
 
     defConfig["streams"]["Radio"]["muted"] = false;

@@ -158,6 +158,11 @@ private:
             _this->lingerTime = std::clamp<int>(_this->lingerTime, 0, 60000);
             changed = true;
         }
+        ImGui::LeftLabel("Reply Watch (kHz)");
+        ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
+        if (ImGui::SliderFloat(("##reply_watch_scanner_" + _this->name).c_str(), &_this->replyWatchKHz, 0.0f, 25.0f, _this->replyWatchKHz > 0.0f ? "+-%.1f" : "off")) {
+            changed = true;
+        }
         ImGui::LeftLabel("Max Listen (s, 0=off)");
         ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
         if (ImGui::InputInt(("##max_listen_scanner_" + _this->name).c_str(), &_this->maxListenTime, 10, 60)) {
@@ -616,6 +621,8 @@ private:
         }
         if (hold) { return; }
 
+        if (!present && watchForReply(now)) { return; }
+
         // A carrier with nothing beside it is a spur or a stuck transmitter, not a transmission
         if (now - receiveStart >= std::chrono::milliseconds(UNMODULATED_CHECK_MS) && modulation.frameCount() >= MIN_MODULATION_FRAMES && modulation.sidebandToNoiseDb() < UNMODULATED_DB) {
             autoSkip(receivingChannel, "unmodulated carrier", now);
@@ -689,6 +696,43 @@ private:
             core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_GET_SQUELCH_STATE, NULL, &state);
         }
         return state;
+    }
+
+    // While the channel is quiet, the other side of the conversation may answer a little off it:
+    // aircraft or ground stations off frequency, offset carriers. Channels around it are watched
+    // and the scanner moves there when one passes the same test as a normal lock twice in a row.
+    bool watchForReply(Clock::time_point now) {
+        // Only once something was heard here, a lock that never opened the squelch isn't a conversation
+        if (replyWatchKHz <= 0.0f || !confirmedAfterListen) { return false; }
+        const scan::Window& window = windows[windowId];
+        double here = channels[receivingChannel];
+        float margin = radioSquelchMargin();
+        double bandwidth = radioBandwidth();
+
+        int best = -1;
+        float bestSNR = -INFINITY;
+        for (int i = window.first; i <= window.last; i++) {
+            double offset = std::fabs(channels[i] - here);
+            if (i == receivingChannel || offset > replyWatchKHz * 1000.0) { continue; }
+            float snr = isSkipped(channels[i], now) ? -INFINITY : channelSNR(i);
+            bool passes = snr >= trigger;
+            if (passes && margin > 0.0f) {
+                dsp::noise_reduction::ChannelPower power = dsp::noise_reduction::measureChannel(detectionSpectrum.data, detectionSpectrum.width, detectionSpectrum.start, detectionSpectrum.span, detectionSpectrum.dcFreq, channels[i], bandwidth);
+                passes = power.valid && power.channelDb - power.noiseDb >= margin;
+            }
+            replyHits[i] = passes ? replyHits[i] + 1 : 0;
+            if (replyHits[i] >= MIN_AVERAGED_FRAMES && snr > bestSNR) {
+                best = i;
+                bestSNR = snr;
+            }
+        }
+        if (best < 0) { return false; }
+
+        flog::info("Scanner: reply on {0:.5f} MHz next to {1:.5f} MHz", channels[best] / 1e6, here / 1e6);
+        if (confirmedAfterListen) { logActivity(now); }
+        replyHits.clear();
+        listen(best, bestSNR, carrierCenter(best), now);
+        return true;
     }
 
     double detectionHalfWidth() {
@@ -778,6 +822,7 @@ private:
         // carrier that is really off the channel is followed.
         followingCarrier = std::fabs(center - channels[channel]) > step * CARRIER_FOLLOW_OFFSET;
         trackedCenter = followingCarrier ? center : channels[channel];
+        replyHits.clear();
         modulation.reset();
         lastAbsent = now;
         tuneVFO(trackedCenter);
@@ -881,6 +926,7 @@ private:
         if (conf.contains("tuningTime")) { tuningTime = conf["tuningTime"]; }
         if (conf.contains("lingerTime")) { lingerTime = conf["lingerTime"]; }
         if (conf.contains("maxListenTime")) { maxListenTime = conf["maxListenTime"]; }
+        if (conf.contains("replyWatch")) { replyWatchKHz = conf["replyWatch"]; }
         if (conf.contains("mode")) { mode = conf["mode"]; }
         if (conf.contains("bookmarkList")) { bookmarkList = conf["bookmarkList"]; }
         if (conf.contains("lockouts")) {
@@ -902,6 +948,7 @@ private:
         conf["tuningTime"] = tuningTime;
         conf["lingerTime"] = lingerTime;
         conf["maxListenTime"] = maxListenTime;
+        conf["replyWatch"] = replyWatchKHz;
         conf["mode"] = mode;
         conf["bookmarkList"] = bookmarkList;
         conf["lockouts"] = json::array();
@@ -951,13 +998,15 @@ private:
     EventHandler<bool> frameHandler;
 
     double startFreq = 118000000.0;
-    double stopFreq = 136975000.0;
-    double step = AIRBAND_25K;
+    double stopFreq = 136991667.0;
+    double step = AIRBAND_833;
     float trigger = 8.0f;
     float detectionWidth = 70.0f;
     int tuningTime = 30;
     int lingerTime = 3000;
     int maxListenTime = 120;
+    float replyWatchKHz = 10.0f;
+    std::map<int, int> replyHits;
     std::set<long long> lockouts;
     std::map<long long, Clock::time_point> tempSkips;
 

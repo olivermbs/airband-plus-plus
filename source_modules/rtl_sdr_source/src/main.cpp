@@ -228,7 +228,14 @@ public:
         config.acquire();
         if (!config.conf["devices"].contains(selectedDevName)) {
             created = true;
-            config.conf["devices"][selectedDevName]["sampleRate"] = 2400000.0;
+
+            // Highest sample rate without dropped samples, and the gain where the SNR stopped
+            // improving on airband with an RTL-SDR Blog V4
+            gainId = 0;
+            for (int i = 0; i < (int)gainList.size(); i++) {
+                if (std::abs(gainList[i] - DEFAULT_GAIN) < std::abs(gainList[gainId] - DEFAULT_GAIN)) { gainId = i; }
+            }
+            config.conf["devices"][selectedDevName]["sampleRate"] = 2560000.0;
             config.conf["devices"][selectedDevName]["directSampling"] = directSamplingMode;
             config.conf["devices"][selectedDevName]["ppm"] = 0;
             config.conf["devices"][selectedDevName]["biasT"] = biasT;
@@ -757,6 +764,7 @@ private:
     bool biasT = false;
 
     int gainId = 0;
+    static constexpr int DEFAULT_GAIN = 338; // tenths of dB
     std::vector<int> gainList;
 
     bool rtlAgc = false;

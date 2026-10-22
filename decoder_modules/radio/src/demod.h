@@ -52,6 +52,8 @@ namespace demod {
         virtual bool getFMIFNRAllowed() = 0;
         virtual bool getNBAllowed() = 0;
         virtual bool getHighPassAllowed() = 0;
+        virtual SquelchMode getDefaultSquelchMode() { return SQUELCH_MODE_OFF; }
+        virtual bool getDefaultHighPass() { return false; }
         virtual bool getSquelchAllowed() = 0;
         virtual dsp::stream<dsp::stereo_t>* getOutput() = 0;
     };

@@ -75,7 +75,7 @@ public:
         bool created = false;
         config.acquire();
         if (!config.conf.contains(name)) {
-            config.conf[name]["selectedDemodId"] = 1;
+            config.conf[name]["selectedDemodId"] = RADIO_DEMOD_AM;
             created = true;
         }
         selectedDemodID = config.conf[name]["selectedDemodId"];
@@ -485,11 +485,11 @@ private:
         snapInterval = selectedDemod->getDefaultSnapInterval();
         deempAllowed = selectedDemod->getDeempAllowed();
         deempId = deempModes.valueId((DeemphasisMode)selectedDemod->getDefaultDeemphasisMode());
-        squelchModeId = squelchModes.valueId(SQUELCH_MODE_OFF);
+        squelchModeId = squelchModes.valueId(selectedDemod->getDefaultSquelchMode());
         squelchLevel = MIN_SQUELCH;
         squelchMargin = DEFAULT_SQUELCH_MARGIN;
         ctcssToneId = ctcssTones.valueId(dsp::noise_reduction::CTCSS_TONE_67Hz);
-        highPass = false;
+        highPass = selectedDemod->getDefaultHighPass();
         audioNREnabled = false;
 
         postProcEnabled = selectedDemod->getPostProcEnabled();

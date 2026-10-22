@@ -87,7 +87,10 @@ namespace demod {
         const char* getName() { return "AM"; }
         double getIFSampleRate() { return 15000.0; }
         double getAFSampleRate() { return getIFSampleRate(); }
-        double getDefaultBandwidth() { return 10000.0; }
+        // Airband: an 8.33kHz channel plus room for aircraft that are off frequency
+        double getDefaultBandwidth() { return 7000.0; }
+        SquelchMode getDefaultSquelchMode() { return SQUELCH_MODE_AUTO; }
+        bool getDefaultHighPass() { return true; }
         double getMinBandwidth() { return 1000.0; }
         double getMaxBandwidth() { return getIFSampleRate(); }
         bool getBandwidthLocked() { return false; }
@@ -109,7 +112,7 @@ namespace demod {
 
         float agcAttack = 50.0f;
         float agcDecay = 5.0f;
-        bool carrierAgc = false;
+        bool carrierAgc = true;
         // Locks onto the carrier, better than the envelope on weak signals
         bool synchronous = false;
 
