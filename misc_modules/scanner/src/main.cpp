@@ -816,10 +816,11 @@ private:
 
     void tuneWindow() {
         const scan::Window& window = windows[windowId];
+        // The main window tunes the SDR to the moved center later in this same frame (the scanner
+        // runs at its start), tuning here as well retuned the hardware twice per window
         gui::waterfall.setCenterFrequency(window.center);
         gui::waterfall.centerFreqMoved = true;
         tuneFailuresAtTune = sigpath::sourceManager.getTuneFailures();
-        sigpath::sourceManager.tune(window.center);
         tuneVFO(channels[window.first]);
 
         int size;
