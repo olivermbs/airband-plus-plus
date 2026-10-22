@@ -37,6 +37,34 @@ TEST(empty_channel_measures_as_noise) {
     CHECK_NEAR(p.noiseDb, -60.0f + 10.0f * std::log10(7000.0f / BIN), 0.5f);
 }
 
+// Noise as the scanner sees it: each bin the mean of `samples` independent noise powers
+static std::vector<float> averagedNoise(unsigned seed, float levelDb, int samples) {
+    std::mt19937 rng(seed);
+    std::exponential_distribution<float> power(1.0f);
+    std::vector<float> bins(SIZE);
+    for (int i = 0; i < SIZE; i++) {
+        float sum = 0.0f;
+        for (int j = 0; j < samples; j++) { sum += power(rng); }
+        bins[i] = levelDb + 10.0f * std::log10(sum / (float)samples);
+    }
+    return bins;
+}
+
+TEST(averaged_noise_measures_without_bias) {
+    // Averaging moves the median towards the mean, taking it for single bins would put the
+    // noise 1 to 1.5dB too high and reject weak signals
+    for (int samples : { 2, 4, 8, 16 }) {
+        float error = 0.0f;
+        for (unsigned seed = 0; seed < 20; seed++) {
+            auto bins = averagedNoise(100 + seed, -60.0f, samples);
+            ChannelPower p = measureChannel(bins.data(), SIZE, START, RATE, CENTER, 126.325e6, 7000.0, samples);
+            error += (p.noiseDb - (-60.0f + 10.0f * std::log10(7000.0f / BIN))) / 20.0f;
+        }
+        if (std::fabs(error) >= 0.2f) { std::printf("  %d samples: noise off by %.2f dB\n", samples, error); }
+        CHECK(std::fabs(error) < 0.2f);
+    }
+}
+
 TEST(signal_in_channel_does_not_raise_noise) {
     auto bins = noise(2, -60.0f);
     addTone(bins, 126.325e6, -30.0f);

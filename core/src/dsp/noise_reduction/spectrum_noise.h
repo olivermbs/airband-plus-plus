@@ -10,15 +10,25 @@ namespace dsp::noise_reduction {
         bool valid;
     };
 
+    // Median of noise power relative to its mean, for bins that are each the mean of a number of
+    // independent noise powers: ln(2) for a single FFT bin, closer to 1 the more is averaged
+    // (Wilson-Hilferty approximation of the gamma distribution's median).
+    inline double noiseMedianRatio(double averagedSamples) {
+        const double LN2 = 0.693147181;
+        if (averagedSamples <= 1.0) { return LN2; }
+        double c = 1.0 - 1.0 / (9.0 * averagedSamples);
+        return c * c * c;
+    }
+
     // Measures a channel and the noise right around it from an FFT in dB per bin. The noise
     // comes from either side of the channel, leaving out a guard band and DC, as the median
     // power: other signals around don't move it, and it follows the local noise level where the
     // spectrum isn't flat. Bins cover [start + i * binWidth, start + (i + 1) * binWidth).
-    inline ChannelPower measureChannel(const float* fft, int size, double start, double span, double dcFreq, double freq, double bandwidth) {
+    // averagedSamples: how many independent noise powers each bin is the mean of, 1 for an FFT.
+    inline ChannelPower measureChannel(const float* fft, int size, double start, double span, double dcFreq, double freq, double bandwidth, double averagedSamples = 1.0) {
         const double NOISE_RANGE = 60000.0;
         const double DC_GUARD = 1000.0;
         const double DB_TO_LN = 0.230258509;
-        const double LN2 = 0.693147181;
         const size_t MIN_REFERENCE_BINS = 16;
 
         double binWidth = span / (double)size;
@@ -45,10 +55,9 @@ namespace dsp::noise_reduction {
 
         if (channelBins == 0 || reference.size() < MIN_REFERENCE_BINS) { return { 0.0f, 0.0f, false }; }
 
-        // Median of exponentially distributed noise power is ln(2) times its mean
         size_t mid = reference.size() / 2;
         std::nth_element(reference.begin(), reference.begin() + mid, reference.end());
-        double noisePerBin = reference[mid] / LN2;
+        double noisePerBin = reference[mid] / noiseMedianRatio(averagedSamples);
 
         return { (float)(10.0 * std::log10(channel)), (float)(10.0 * std::log10(noisePerBin * channelBins)), true };
     }
