@@ -24,6 +24,11 @@ namespace dsp::noise_reduction {
             base_type::tempStart();
         }
 
+        void setStrength(float strength) {
+            left.setStrength(strength);
+            right.setStrength(strength);
+        }
+
         inline int process(int count, const stereo_t* in, stereo_t* out) {
             if ((int)leftIn.size() < count) {
                 leftIn.resize(count);

@@ -353,6 +353,13 @@ private:
             if (ImGui::Checkbox(("Noise Reduction##_radio_audio_nr_" + _this->name).c_str(), &_this->audioNREnabled)) {
                 _this->setAudioNR(_this->audioNREnabled);
             }
+            if (!_this->audioNREnabled) { style::beginDisabled(); }
+            ImGui::SameLine();
+            ImGui::FillWidth();
+            if (ImGui::SliderFloat(("##_radio_audio_nr_strength_" + _this->name).c_str(), &_this->audioNRStrength, 0.0f, 100.0f, "%.0f%%")) {
+                _this->setAudioNRStrength(_this->audioNRStrength);
+            }
+            if (!_this->audioNREnabled) { style::endDisabled(); }
         }
 
         // Demodulator specific menu
@@ -527,6 +534,10 @@ private:
         if (config.conf[name][selectedDemod->getName()].contains("audioNR")) {
             audioNREnabled = config.conf[name][selectedDemod->getName()]["audioNR"];
         }
+        audioNRStrength = DEFAULT_AUDIO_NR_STRENGTH;
+        if (config.conf[name][selectedDemod->getName()].contains("audioNRStrength")) {
+            audioNRStrength = config.conf[name][selectedDemod->getName()]["audioNRStrength"];
+        }
         if (config.conf[name][selectedDemod->getName()].contains("highPass")) {
             highPass = config.conf[name][selectedDemod->getName()]["highPass"];
         }
@@ -597,6 +608,7 @@ private:
 
             // Configure the HPF
             setHighPass(highPass && highPassAllowed);
+            setAudioNRStrength(audioNRStrength);
             setAudioNR(audioNREnabled && audioNRAllowed);
 
             // Configure deemphasis
@@ -653,6 +665,15 @@ private:
         deemp.setSamplerate(audioSampleRate);
 
         afChain.start();
+    }
+
+    void setAudioNRStrength(float strength) {
+        audioNRStrength = std::clamp<float>(strength, 0.0f, 100.0f);
+        audioNR.setStrength(audioNRStrength / 100.0f);
+        if (!selectedDemod) { return; }
+        config.acquire();
+        config.conf[name][selectedDemod->getName()]["audioNRStrength"] = audioNRStrength;
+        config.release(true);
     }
 
     void setAudioNR(bool enabled) {
@@ -1063,6 +1084,8 @@ private:
     bool highPassAllowed = false;
 
     bool audioNREnabled = false;
+    float audioNRStrength = 50.0f;
+    const float DEFAULT_AUDIO_NR_STRENGTH = 50.0f;
     bool audioNRAllowed = false;
 
     int deempId = 0;

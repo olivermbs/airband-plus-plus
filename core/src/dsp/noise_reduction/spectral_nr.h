@@ -58,6 +58,10 @@ namespace dsp::noise_reduction {
             ready.clear();
         }
 
+        void setStrength(float strength) {
+            gainFloor = std::pow(10.0f, -12.0f * std::clamp<float>(strength, 0.0f, 1.0f) / 20.0f);
+        }
+
         // Output sample i corresponds to input sample i - latency()
         int latency() const { return size - 1; }
 
@@ -111,7 +115,7 @@ namespace dsp::noise_reduction {
                 // Decision directed a priori SNR and Wiener gain, never below the floor
                 float post = (noise[k] > 0.0f) ? p / noise[k] : 1e6f;
                 float prior = PRIOR_SMOOTHING * (lastGainedPower[k] / std::max<float>(noise[k], 1e-20f)) + (1.0f - PRIOR_SMOOTHING) * std::max<float>(post - 1.0f, 0.0f);
-                gains[k] = std::max<float>(prior / (1.0f + prior), GAIN_FLOOR);
+                gains[k] = std::max<float>(prior / (1.0f + prior), gainFloor);
                 lastGainedPower[k] = gains[k] * gains[k] * p;
             }
 
@@ -120,8 +124,11 @@ namespace dsp::noise_reduction {
                 // The reduction fades in once learnt instead of switching on at once.
                 strength = std::min<float>(1.0f, strength + (float)(1.0 / (framesPerSecond * FADE_IN_SECONDS)));
                 for (int k = 0; k < bins; k++) {
-                    float g = gains[k];
-                    if (k > 0 && k < bins - 1) { g = 0.25f * gains[k - 1] + 0.5f * gains[k] + 0.25f * gains[k + 1]; }
+                    int lo = std::max<int>(0, k - SMOOTH_BINS);
+                    int hi = std::min<int>(bins - 1, k + SMOOTH_BINS);
+                    float g = 0.0f;
+                    for (int j = lo; j <= hi; j++) { g += gains[j]; }
+                    g /= (float)(hi - lo + 1);
                     g = 1.0f - strength * (1.0f - g);
                     freq[k][0] *= g;
                     freq[k][1] *= g;
@@ -152,10 +159,15 @@ namespace dsp::noise_reduction {
         }
 
         static constexpr float POWER_SMOOTHING = 0.8f;
-        static constexpr float PRIOR_SMOOTHING = 0.95f;
+        // Smoothing the gain over time keeps weak speech from sounding watery or metallic. Across
+        // frequency only the direct neighbours, wider smoothing pulls the harmonics of voiced
+        // speech down to the level of the gaps between them (3.6dB lost over 300Hz).
+        static constexpr float PRIOR_SMOOTHING = 0.98f;
+        static constexpr int SMOOTH_BINS = 1;
         static constexpr float MINIMUM_BIAS = 1.5f;
-        // -9dB: hiss is turned down, not removed, so speech can't be punched out
-        static constexpr float GAIN_FLOOR = 0.35f;
+        // The gain never goes below the floor: hiss is turned down, not removed, so weak speech
+        // keeps its sound. Strength 0..1 maps to a floor of 0dB..-12dB.
+        float gainFloor = 0.5f;
         static constexpr double MIN_WINDOW_SECONDS = 1.5;
         static constexpr double FADE_IN_SECONDS = 0.5;
 

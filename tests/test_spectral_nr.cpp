@@ -40,9 +40,10 @@ static void separate(const std::vector<float>& out, const std::vector<float>& cl
     restPower /= (out.size() - start);
 }
 
-static std::vector<float> run(const std::vector<float>& in) {
+static std::vector<float> run(const std::vector<float>& in, float strength = 0.5f) {
     SpectralNoiseReducer nr;
     nr.init(FS);
+    nr.setStrength(strength);
     std::vector<float> out(in.size());
     // Odd block sizes, like the DSP chain delivers
     for (size_t i = 0; i < in.size(); i += 333) {
@@ -57,11 +58,13 @@ TEST(noise_is_reduced) {
     std::normal_distribution<float> noise(0.0f, 0.1f);
     std::vector<float> in((int)(4 * FS));
     for (auto& v : in) { v = noise(rng); }
-    auto out = run(in);
     int start = (int)(2 * FS);
-    double reduction = 10.0 * std::log10(power(in, start) / power(out, start));
-    std::printf("  noise reduced by %.1f dB\n", reduction);
-    CHECK(reduction > 8.0);
+    // Default strength turns the noise down by about 6dB, full strength by about 12dB
+    double reduction = 10.0 * std::log10(power(in, start) / power(run(in), start));
+    double full = 10.0 * std::log10(power(in, start) / power(run(in, 1.0f), start));
+    std::printf("  noise reduced by %.1f dB, %.1f dB at full strength\n", reduction, full);
+    CHECK(reduction > 5.0);
+    CHECK(full > 10.0);
 }
 
 TEST(speech_is_kept_and_noise_reduced) {
@@ -72,7 +75,7 @@ TEST(speech_is_kept_and_noise_reduced) {
     auto clean = bursts(count, 1000.0, 0.447f);
     std::vector<float> in(count);
     for (int i = 0; i < count; i++) { in[i] = clean[i] + noise(rng); }
-    auto out = run(in);
+    auto out = run(in, 1.0f);
 
     SpectralNoiseReducer probe;
     probe.init(FS);
