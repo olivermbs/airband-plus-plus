@@ -1453,6 +1453,9 @@ int r82xx_init(struct r82xx_priv *priv)
 	/* TODO: R828D might need r82xx_xtal_check() */
 	priv->xtal_cap_sel = XTAL_HIGH_CAP_0P;
 
+	/* Init writes every register, failures while probing before don't matter anymore */
+	priv->shadow_unreliable = 0;
+
 	/* Initialize registers */
 	rc = r82xx_write(priv, 0x05,
 			 r82xx_init_array, sizeof(r82xx_init_array));
