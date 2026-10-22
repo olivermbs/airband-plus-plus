@@ -52,6 +52,9 @@ namespace dsp::noise_reduction {
             tracker.setMargin(margin);
         }
 
+        // Keeps the output silent while still measuring, e.g. while a scanner is searching
+        void setForceClosed(bool forceClosed) { _forceClosed = forceClosed; }
+
         // Level and noise floor of the auto mode, in dB
         float getLevel() { return _lastLevel; }
         float getNoiseFloor() { return _noiseFloor; }
@@ -82,7 +85,7 @@ namespace dsp::noise_reduction {
             _lastLevel = levelDb;
             _open = open;
 
-            if (open) {
+            if (open && !_forceClosed) {
                 memcpy(out, in, count * sizeof(complex_t));
             }
             else {
@@ -111,6 +114,7 @@ namespace dsp::noise_reduction {
         std::atomic<float> _lastLevel = -INFINITY;
         std::atomic<float> _noiseFloor = -INFINITY;
         std::atomic<bool> _open = false;
+        std::atomic<bool> _forceClosed = false;
                 
     };
 }

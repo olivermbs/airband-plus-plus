@@ -141,31 +141,75 @@ TEST(signal_center_ignores_noise_and_dc) {
     CHECK_NEAR(signalCenter(s.view, center + 8000.0, 8750.0, 3000.0), binCenter, 1.0);
 }
 
-TEST(average_bins_groups_raw_bins) {
-    std::vector<float> raw = { -60, -62, -40, -40, -61, -59, -70 };
-    std::vector<float> avg = averageBins(raw.data(), (int)raw.size(), 2);
-    CHECK(avg.size() == 3);
-    CHECK_NEAR(avg[0], -61.0f, 0.001f);
-    CHECK_NEAR(avg[1], -40.0f, 0.001f);
-    CHECK_NEAR(avg[2], -60.0f, 0.001f);
-
-    CHECK(averageBins(raw.data(), (int)raw.size(), 1).size() == raw.size());
+TEST(detection_average_is_linear_over_bins_and_frames) {
+    DetectionAverage d;
+    std::vector<float> frame1 = { 0.0f, 0.0f, 10.0f, 10.0f };
+    std::vector<float> frame2 = { 0.0f, 0.0f, 0.0f, 0.0f };
+    d.add(frame1.data(), 4, 2);
+    CHECK(d.bins().size() == 2);
+    CHECK_NEAR(d.bins()[0], 0.0f, 0.001f);
+    CHECK_NEAR(d.bins()[1], 10.0f, 0.001f);
+    d.add(frame2.data(), 4, 2);
+    CHECK(d.frameCount() == 2);
+    CHECK_NEAR(d.bins()[1], 10.0f * std::log10(5.5f), 0.001f);
+    d.reset();
+    d.add(frame2.data(), 4, 2);
+    CHECK_NEAR(d.bins()[1], 0.0f, 0.001f);
 }
 
-TEST(averaging_keeps_noise_peaks_low) {
-    // Max of noise bins in a channel must stay well below the trigger after averaging
-    std::mt19937 rng(7);
+// Detection SNR of every channel in a window, as the scanner sees it after averaging
+// `frames` FFT frames of noise, optionally with a carrier added
+static std::vector<float> windowSNRs(int fftSize, double sampleRate, double step, int frames, unsigned seed, double carrierFreq = 0.0, float carrierBinSNR = 0.0f) {
+    std::mt19937 rng(seed);
     std::exponential_distribution<float> power(1.0f);
-    std::vector<float> raw(65536);
-    for (auto& v : raw) { v = 10.0f * std::log10(power(rng)); }
-    std::vector<float> avg = averageBins(raw.data(), (int)raw.size(), 16);
-    Spectrum s = { avg.data(), (int)avg.size(), 119e6, 2.4e6, 120.2e6 };
-    float worst = 0.0f;
-    for (double f = 119.1e6; f < 120.1e6; f += STEP_833) {
-        float snr = channelPeak(s, f, 2900.0, 1000.0) - noiseFloor(s, f, 150000.0, 2900.0, 1000.0, 0.3f);
-        worst = std::max(worst, snr);
+    double center = 120e6;
+    double rawBin = sampleRate / fftSize;
+    double start = center - sampleRate / 2.0 - rawBin / 2.0;
+    int factor = detectionAveraging(step, rawBin);
+
+    DetectionAverage detection;
+    std::vector<float> raw(fftSize);
+    for (int f = 0; f < frames; f++) {
+        for (auto& v : raw) { v = 10.0f * std::log10(power(rng)); }
+        if (carrierFreq > 0.0) {
+            int b = (int)std::floor((carrierFreq - start) / rawBin);
+            raw[b] = 10.0f * std::log10(std::pow(10.0f, carrierBinSNR / 10.0f) + power(rng));
+        }
+        detection.add(raw.data(), fftSize, factor);
     }
-    CHECK(worst < 6.0f);
+
+    const std::vector<float>& bins = detection.bins();
+    Spectrum s = { bins.data(), (int)bins.size(), start, rawBin * factor * bins.size(), center };
+    std::vector<float> snrs;
+    double halfWidth = step * 0.35;
+    for (double f = center - 1.0e6; f < center + 1.0e6; f += step) {
+        snrs.push_back(channelPeak(s, f, halfWidth, s.binWidth() * 1.5) - noiseFloor(s, f, 150000.0, halfWidth, s.binWidth() * 1.5, 0.3f));
+    }
+    return snrs;
+}
+
+TEST(noise_stays_below_trigger_for_every_fft_size) {
+    for (int fftSize : { 8192, 16384, 32768, 65536, 131072 }) {
+        for (double step : { STEP_833, STEP_25K }) {
+            std::vector<float> snrs = windowSNRs(fftSize, 2.56e6, step, 2, 11);
+            float worst = *std::max_element(snrs.begin(), snrs.end());
+            if (worst >= 6.0f) { std::printf("  fft %d step %.0f: noise reaches %.1f dB\n", fftSize, step, worst); }
+            CHECK(worst < 6.0f);
+        }
+    }
+}
+
+TEST(weak_narrow_carrier_is_detected_for_every_fft_size) {
+    // A carrier 15dB above the noise in a 312Hz bin (8192 point FFT at 2.56MS/s), the
+    // same carrier is proportionally stronger in the narrower bins of larger FFTs
+    for (int fftSize : { 8192, 16384, 32768, 65536, 131072 }) {
+        float binSNR = 15.0f + 10.0f * std::log10((float)fftSize / 8192.0f);
+        double carrier = 120e6 + 10 * STEP_833 + 900.0;
+        std::vector<float> snrs = windowSNRs(fftSize, 2.56e6, STEP_833, 2, 12, carrier, binSNR);
+        int channel = (int)std::lround((carrier - (120e6 - 1.0e6)) / STEP_833);
+        if (snrs[channel] < 8.0f) { std::printf("  fft %d: carrier only %.1f dB\n", fftSize, snrs[channel]); }
+        CHECK(snrs[channel] >= 8.0f);
+    }
 }
 
 TEST(grid_windows_cover_every_channel_once_with_dc_between_channels) {

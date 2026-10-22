@@ -874,6 +874,22 @@ private:
             bool* _in = (bool*)in;
             _this->setHighPass(*_in);
         }
+        else if (code == RADIO_IFACE_CMD_SET_SQUELCH_MUTE && in) {
+            // Only effective with a level squelch, the block is bypassed otherwise
+            bool* _in = (bool*)in;
+            _this->powerSquelch.setForceClosed(*_in);
+        }
+        else if (code == RADIO_IFACE_CMD_GET_SQUELCH_STATE && out) {
+            int* _out = (int*)out;
+            SquelchMode mode = _this->squelchModes[_this->squelchModeId];
+            bool levelSquelch = _this->squelchAllowed && (mode == SQUELCH_MODE_POWER || mode == SQUELCH_MODE_AUTO);
+            if (!levelSquelch) {
+                *_out = RADIO_IFACE_SQUELCH_NONE;
+            }
+            else {
+                *_out = _this->powerSquelch.isOpen() ? RADIO_IFACE_SQUELCH_OPEN : RADIO_IFACE_SQUELCH_CLOSED;
+            }
+        }
         else {
             return;
         }

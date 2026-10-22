@@ -2,6 +2,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <module.h>
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
@@ -360,12 +362,24 @@ private:
         _this->running = true;
         _this->workerThread = std::thread(&RTLSDRSourceModule::worker, _this);
 
+        _this->tunePending = false;
+        _this->tunerRunning = true;
+        _this->tunerThread = std::thread(&RTLSDRSourceModule::tunerWorker, _this);
+
         flog::info("RTLSDRSourceModule '{0}': Start!", _this->name);
     }
 
     static void stop(void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
         if (!_this->running) { return; }
+
+        {
+            std::lock_guard<std::mutex> lck(_this->tuneMtx);
+            _this->tunerRunning = false;
+        }
+        _this->tuneCnd.notify_all();
+        if (_this->tunerThread.joinable()) { _this->tunerThread.join(); }
+
         _this->running = false;
         _this->stream.stopWriter();
 
@@ -380,21 +394,44 @@ private:
         flog::info("RTLSDRSourceModule '{0}': Stop!", _this->name);
     }
 
+    // Retuning takes 20-30ms of USB transfers. It's done on its own thread so the caller,
+    // usually the GUI, never waits for it. Requests made meanwhile collapse into the newest one.
     static void tune(double freq, void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+        _this->freq = freq;
         if (_this->running) {
-            uint32_t newFreq = freq;
+            {
+                std::lock_guard<std::mutex> lck(_this->tuneMtx);
+                _this->pendingFreq = freq;
+                _this->tunePending = true;
+            }
+            _this->tuneCnd.notify_one();
+        }
+        flog::info("RTLSDRSourceModule '{0}': Tune: {1}!", _this->name, freq);
+    }
+
+    void tunerWorker() {
+        while (true) {
+            double target;
+            {
+                std::unique_lock<std::mutex> lck(tuneMtx);
+                tuneCnd.wait(lck, [this]() { return tunePending || !tunerRunning; });
+                if (!tunerRunning) { return; }
+                target = pendingFreq;
+                tunePending = false;
+            }
+
+            std::lock_guard<std::mutex> devLck(devMtx);
+            uint32_t newFreq = target;
             int i;
             for (i = 0; i < 10; i++) {
-                rtlsdr_set_center_freq(_this->openDev, freq);
-                if (rtlsdr_get_center_freq(_this->openDev) == newFreq) { break; }
+                rtlsdr_set_center_freq(openDev, newFreq);
+                if (rtlsdr_get_center_freq(openDev) == newFreq) { break; }
             }
             if (i > 1) {
                 flog::warn("RTL-SDR took {0} attempts to tune...", i);
             }
         }
-        _this->freq = freq;
-        flog::info("RTLSDRSourceModule '{0}': Tune: {1}!", _this->name, freq);
     }
 
     static void menuHandler(void* ctx) {
@@ -446,6 +483,7 @@ private:
         SmGui::FillWidth();
         if (SmGui::Combo(CONCAT("##_rtlsdr_ds_", _this->name), &_this->directSamplingMode, directSamplingModesTxt)) {
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 rtlsdr_set_direct_sampling(_this->openDev, _this->directSamplingMode);
 
                 // Update gains (fix for librtlsdr bug)
@@ -472,6 +510,7 @@ private:
         if (SmGui::InputInt(CONCAT("##_rtlsdr_ppm_", _this->name), &_this->ppm, 1, 10)) {
             _this->ppm = std::clamp<int>(_this->ppm, -1000000, 1000000);
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 rtlsdr_set_freq_correction(_this->openDev, _this->ppm);
             }
             if (_this->selectedDevName != "") {
@@ -491,6 +530,7 @@ private:
             if (SmGui::SliderInt(CONCAT("##_rtlsdr_gain_", _this->name), &_this->gainId, 0, _this->gainList.size() - 1, SmGui::FMT_STR_NONE)) {
                 _this->updateGainTxt();
                 if (_this->running) {
+                    std::lock_guard<std::mutex> devLck(_this->devMtx);
                     rtlsdr_set_tuner_gain(_this->openDev, _this->gainList[_this->gainId]);
                 }
                 if (_this->selectedDevName != "") {
@@ -504,6 +544,7 @@ private:
             if (ImGui::SliderInt(CONCAT("##_rtlsdr_gain_", _this->name), &_this->gainId, 0, _this->gainList.size() - 1, _this->dbTxt)) {
                 _this->updateGainTxt();
                 if (_this->running) {
+                    std::lock_guard<std::mutex> devLck(_this->devMtx);
                     rtlsdr_set_tuner_gain(_this->openDev, _this->gainList[_this->gainId]);
                 }
                 if (_this->selectedDevName != "") {
@@ -519,6 +560,7 @@ private:
 
         if (SmGui::Checkbox(CONCAT("Bias T##_rtlsdr_rtl_biast_", _this->name), &_this->biasT)) {
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 rtlsdr_set_bias_tee(_this->openDev, _this->biasT);
             }
             if (_this->selectedDevName != "") {
@@ -530,6 +572,7 @@ private:
 
         if (SmGui::Checkbox(CONCAT("Offset Tuning##_rtlsdr_rtl_ofs_", _this->name), &_this->offsetTuning)) {
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 rtlsdr_set_offset_tuning(_this->openDev, _this->offsetTuning);
             }
             if (_this->selectedDevName != "") {
@@ -541,6 +584,7 @@ private:
 
         if (SmGui::Checkbox(CONCAT("RTL AGC##_rtlsdr_rtl_agc_", _this->name), &_this->rtlAgc)) {
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 rtlsdr_set_agc_mode(_this->openDev, _this->rtlAgc);
             }
             if (_this->selectedDevName != "") {
@@ -553,6 +597,7 @@ private:
         SmGui::ForceSync();
         if (SmGui::Checkbox(CONCAT("Tuner AGC##_rtlsdr_tuner_agc_", _this->name), &_this->tunerAgc)) {
             if (_this->running) {
+                std::lock_guard<std::mutex> devLck(_this->devMtx);
                 if (_this->tunerAgc) {
                     rtlsdr_set_tuner_gain_mode(_this->openDev, 0);
                 }
@@ -665,6 +710,15 @@ private:
     EventHandler<bool> frameHandler;
     std::atomic<bool> deviceLost = false;
     std::atomic<bool> workerFinished = true;
+
+    // Serialises every librtlsdr control call while streaming
+    std::mutex devMtx;
+    std::thread tunerThread;
+    std::mutex tuneMtx;
+    std::condition_variable tuneCnd;
+    double pendingFreq = 0.0;
+    bool tunePending = false;
+    bool tunerRunning = false;
     bool waitingForDevice = false;
     bool selected = false;
     std::chrono::steady_clock::time_point lastReconnectAttempt;

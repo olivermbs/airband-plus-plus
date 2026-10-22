@@ -100,21 +100,53 @@ namespace scan {
         }
     };
 
-    // Averages groups of `factor` bins (dropping the incomplete last group). Unlike the max
-    // reduction used for display, averaging lowers the noise variance, so a channel's peak
-    // bin isn't biased upwards by noise.
-    inline std::vector<float> averageBins(const float* data, int size, int factor) {
-        factor = std::max<int>(1, factor);
-        std::vector<float> out(size / factor);
-        for (int i = 0; i < (int)out.size(); i++) {
-            float sum = 0.0f;
-            for (int j = 0; j < factor; j++) {
-                sum += data[i * factor + j];
-            }
-            out[i] = sum / (float)factor;
-        }
-        return out;
+    // How many raw FFT bins to average per detection bin: about an eighth of the channel step,
+    // and never so few that the noise of a single bin dominates
+    inline int detectionAveraging(double step, double rawBinWidth) {
+        const int MIN_AVERAGED_BINS = 4;
+        return std::max<int>(MIN_AVERAGED_BINS, (int)std::lround(step / 8.0 / rawBinWidth));
     }
+
+    // Averages the power of FFT frames over groups of bins and over consecutive frames.
+    // A bin of a single frame of noise varies by about 5.6dB, so without averaging the
+    // strongest bin of a channel easily looks like a signal. Averaging is done on linear
+    // power, averaging dB values would dilute a narrow carrier into the noise.
+    class DetectionAverage {
+    public:
+        void reset() { frames = 0; }
+
+        void add(const float* db, int size, int factor) {
+            int count = size / factor;
+            if (frames == 0 || (int)sum.size() != count) {
+                sum.assign(count, 0.0f);
+                frames = 0;
+            }
+
+            for (int i = 0; i < count; i++) {
+                float power = 0.0f;
+                for (int j = 0; j < factor; j++) {
+                    power += std::exp(db[i * factor + j] * DB_TO_LN);
+                }
+                sum[i] += power / (float)factor;
+            }
+            frames++;
+
+            out.resize(count);
+            for (int i = 0; i < count; i++) {
+                out[i] = 10.0f * std::log10(sum[i] / (float)frames);
+            }
+        }
+
+        int frameCount() const { return frames; }
+        const std::vector<float>& bins() const { return out; }
+
+    private:
+        static constexpr float DB_TO_LN = 0.230258509f; // ln(10) / 10
+
+        std::vector<float> sum;
+        std::vector<float> out;
+        int frames = 0;
+    };
 
     // Strongest bin within the channel, ignoring the bins around DC
     inline float channelPeak(const Spectrum& spectrum, double freq, double halfWidth, double dcGuard) {

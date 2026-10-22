@@ -202,7 +202,11 @@ private:
         if (state == State::Receiving) {
             double freq = channels[receivingChannel];
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "Receiving %.5f MHz", freq / 1e6);
-            ImGui::Text("SNR %.1f dB, carrier %+.2f kHz", receivingSNR, (vfoFreq - freq) / 1e3);
+            ImGui::Text("SNR %.1f dB, %s", receivingSNR, followingCarrier ? "following off-channel carrier" : "on channel");
+            int squelch = radioSquelchState();
+            if (squelch == RADIO_IFACE_SQUELCH_NONE) {
+                ImGui::TextDisabled("Holding on the FFT, use Auto squelch to hold on what you hear");
+            }
 
             ImGui::BeginTable(("scanner_rx_btn_table" + name).c_str(), 2);
             ImGui::TableNextRow();
@@ -321,13 +325,14 @@ private:
         setStep(presetStep);
         startFreq = 118000000.0;
         stopFreq = (presetStep == AIRBAND_25K) ? 136975000.0 : std::round(118000000.0 + 2279.0 * step);
+        lingerTime = std::max<int>(lingerTime, 3000);
         saveConfig();
 
         std::string vfoName = gui::waterfall.selectedVFO;
         if (core::modComManager.getModuleName(vfoName) != "radio") { return; }
 
         int mode = RADIO_IFACE_MODE_AM;
-        float bandwidth = (presetStep == AIRBAND_25K) ? 9000.0f : 6000.0f;
+        float bandwidth = (presetStep == AIRBAND_25K) ? 9000.0f : 7000.0f;
         SquelchMode squelchMode = SQUELCH_MODE_AUTO;
         core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_SET_MODE, &mode, NULL);
         core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_SET_BANDWIDTH, &bandwidth, NULL);
@@ -366,6 +371,10 @@ private:
             return;
         }
 
+        // Searching is silent and only a transmission the squelch lets through is heard
+        ensureLevelSquelch();
+        setRadioMuted(true);
+
         // A faster FFT shortens every wait while scanning
         core::configManager.acquire();
         userFFTRate = core::configManager.conf["fftRate"];
@@ -382,6 +391,7 @@ private:
 
     void stop(const std::string& reason) {
         if (running && userFFTRate < SCAN_FFT_RATE) { sigpath::iqFrontEnd.setFFTRate(userFFTRate); }
+        if (running) { setRadioMuted(false); }
         running = false;
         error = reason;
     }
@@ -413,8 +423,11 @@ private:
         }
 
         if (state == State::Tuning && now - stateSince < std::chrono::milliseconds(tuningTime)) { return; }
+        if (state == State::Tuning) {
+            if (!newFrameAvailable()) { return; }
+            enterSearching();
+        }
         if (!readSpectrum()) { return; }
-        if (state == State::Tuning) { enterSearching(); }
 
         if (state == State::Receiving) {
             updateReceiving(now);
@@ -426,6 +439,14 @@ private:
 
     // Copies the newest FFT frame. Frames that were already used, and frames that may still
     // hold samples from before the last retune, are rejected.
+    bool newFrameAvailable() {
+        int size = 0;
+        uint64_t frame = 0;
+        if (!gui::waterfall.acquireRawFFT(size, frame)) { return false; }
+        gui::waterfall.releaseRawFFT();
+        return frame != lastFrame && frame >= tuneFrame + FRAMES_AFTER_TUNE;
+    }
+
     bool readSpectrum() {
         int size = 0;
         uint64_t frame = 0;
@@ -444,9 +465,12 @@ private:
         double start = center - (plannedBandwidth / 2.0) - (rawBinWidth / 2.0);
         fineSpectrum = { rawFFT.data(), size, start, plannedBandwidth, center };
 
-        int factor = std::max<int>(1, (int)std::floor(step / DETECTION_BINS_PER_STEP / rawBinWidth));
-        detectionBins = scan::averageBins(rawFFT.data(), size, factor);
-        detectionSpectrum = { detectionBins.data(), (int)detectionBins.size(), start, rawBinWidth * factor * detectionBins.size(), center };
+        // Searching averages the frames of the window, receiving looks at the newest frame only
+        int factor = scan::detectionAveraging(step, rawBinWidth);
+        if (state != State::Searching) { detection.reset(); }
+        detection.add(rawFFT.data(), size, factor);
+        const std::vector<float>& bins = detection.bins();
+        detectionSpectrum = { bins.data(), (int)bins.size(), start, rawBinWidth * factor * bins.size(), center };
         return true;
     }
 
@@ -456,10 +480,11 @@ private:
         std::vector<float> snr(count);
         for (int i = 0; i < count; i++) {
             snr[i] = isSkipped(channels[window.first + i], now) ? -INFINITY : channelSNR(window.first + i);
-            hits[i] = (snr[i] >= trigger) ? hits[i] + 1 : 0;
         }
 
-        int picked = scan::pickStrongest(snr, hits, CONFIRM_FRAMES, trigger);
+        // A decision needs at least two frames averaged, one frame is too noisy
+        std::vector<int> averagedFrames(count, detection.frameCount());
+        int picked = scan::pickStrongest(snr, averagedFrames, MIN_AVERAGED_FRAMES, trigger);
         if (picked < 0) {
             searchFrames++;
             if (searchFrames >= SEARCH_FRAMES) { nextWindow(); }
@@ -480,8 +505,14 @@ private:
             vfoFreq = actualFreq;
         }
 
+        // The radio's squelch decides what is heard, so it also decides how long to stay.
+        // Without a level squelch the FFT is used instead.
         receivingSNR = channelSNR(receivingChannel);
-        if (receivingSNR >= trigger - RECEIVE_HYSTERESIS) {
+        // Stay while either hears it: a weak reply from the ground may stay under the squelch
+        // but still shows in the FFT
+        int squelch = radioSquelchState();
+        bool present = (squelch == RADIO_IFACE_SQUELCH_OPEN) || (receivingSNR >= trigger - RECEIVE_HYSTERESIS);
+        if (present) {
             lastSignal = now;
             confirmedAfterListen = true;
         }
@@ -495,7 +526,7 @@ private:
             return;
         }
 
-        if (receivingSNR >= trigger) {
+        if (followingCarrier && receivingSNR >= trigger) {
             followCarrier(carrierCenter(receivingChannel));
         }
 
@@ -508,6 +539,33 @@ private:
         if (now - lastSignal > std::chrono::milliseconds(lingerTime)) {
             resumeSearching();
         }
+    }
+
+    bool radioAvailable() {
+        return core::modComManager.getModuleName(vfoName) == "radio";
+    }
+
+    // Without a level squelch every channel passed would be heard as noise
+    void ensureLevelSquelch() {
+        if (!radioAvailable()) { return; }
+        SquelchMode squelchMode = SQUELCH_MODE_OFF;
+        core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_GET_SQUELCH_MODE, NULL, &squelchMode);
+        if (squelchMode == SQUELCH_MODE_POWER || squelchMode == SQUELCH_MODE_AUTO) { return; }
+        squelchMode = SQUELCH_MODE_AUTO;
+        core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_SET_SQUELCH_MODE, &squelchMode, NULL);
+    }
+
+    void setRadioMuted(bool muted) {
+        if (!radioAvailable()) { return; }
+        core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_SET_SQUELCH_MUTE, &muted, NULL);
+    }
+
+    int radioSquelchState() {
+        int state = RADIO_IFACE_SQUELCH_NONE;
+        if (radioAvailable()) {
+            core::modComManager.callInterface(vfoName, RADIO_IFACE_CMD_GET_SQUELCH_STATE, NULL, &state);
+        }
+        return state;
     }
 
     double detectionHalfWidth() {
@@ -550,6 +608,7 @@ private:
     }
 
     void listen(int channel, float snr, double center, Clock::time_point now) {
+        flog::info("Scanner: receiving {0:.5f} MHz, carrier at {1:.5f} MHz, {2:.1f} dB", channels[channel] / 1e6, center / 1e6, snr);
         state = State::Receiving;
         receivingChannel = channel;
         receivingSNR = snr;
@@ -558,8 +617,14 @@ private:
         hold = false;
         framesSinceListen = 0;
         confirmedAfterListen = false;
-        trackedCenter = center;
-        tuneVFO(center);
+
+        // Aircraft are often a few hundred Hz to over a kHz off, the ground station is usually
+        // spot on. Listening on the channel itself hears both sides of the conversation, only a
+        // carrier that is really off the channel is followed.
+        followingCarrier = std::fabs(center - channels[channel]) > step * CARRIER_FOLLOW_OFFSET;
+        trackedCenter = followingCarrier ? center : channels[channel];
+        tuneVFO(trackedCenter);
+        setRadioMuted(false);
     }
 
     void skipAhead() {
@@ -577,9 +642,10 @@ private:
     }
 
     void enterSearching() {
+        if (state == State::Receiving) { setRadioMuted(true); }
         state = State::Searching;
         searchFrames = 0;
-        hits.assign(windows[windowId].last - windows[windowId].first + 1, 0);
+        detection.reset();
     }
 
     void nextWindow() {
@@ -695,16 +761,17 @@ private:
     static constexpr int VERIFY_FRAMES = 3;
     static constexpr int SCAN_FFT_RATE = 60;
     static constexpr double DC_CLEARANCE_MARGIN = 2000.0;
-    static constexpr int CONFIRM_FRAMES = 2;
-    static constexpr uint64_t FRAMES_AFTER_TUNE = 2;
+    static constexpr int MIN_AVERAGED_FRAMES = 2;
+    static constexpr uint64_t FRAMES_AFTER_TUNE = 3;
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
     static constexpr double CENTER_SMOOTHING = 0.3;
     static constexpr double MIN_RETUNE_HZ = 200.0;
+    // Fraction of the step a carrier may be off the channel before it is followed instead
+    static constexpr double CARRIER_FOLLOW_OFFSET = 0.25;
 
     // Only the flat middle of the spectrum is used, the edges roll off
     static constexpr double USABLE_BANDWIDTH = 0.85;
-    static constexpr double DETECTION_BINS_PER_STEP = 12.0;
     static constexpr double FLOOR_RADIUS = 150000.0;
     static constexpr float FLOOR_QUANTILE = 0.3f;
 
@@ -718,7 +785,7 @@ private:
     float trigger = 8.0f;
     float detectionWidth = 70.0f;
     int tuningTime = 30;
-    int lingerTime = 2000;
+    int lingerTime = 3000;
     int maxListenTime = 120;
     std::set<long long> lockouts;
     std::map<long long, Clock::time_point> tempSkips;
@@ -746,7 +813,7 @@ private:
     int windowId = 0;
 
     std::vector<float> rawFFT;
-    std::vector<float> detectionBins;
+    scan::DetectionAverage detection;
     scan::Spectrum fineSpectrum = {};
     scan::Spectrum detectionSpectrum = {};
     double rawBinWidth = 0.0;
@@ -756,7 +823,6 @@ private:
     State state = State::Tuning;
     Clock::time_point stateSince;
     int searchFrames = 0;
-    std::vector<int> hits;
 
     int receivingChannel = 0;
     int framesSinceListen = 0;
@@ -764,6 +830,7 @@ private:
     float receivingSNR = 0.0f;
     double vfoFreq = 0.0;
     double trackedCenter = 0.0;
+    bool followingCarrier = false;
     Clock::time_point receiveStart;
     Clock::time_point lastSignal;
 };
