@@ -6,7 +6,6 @@
 #include <gui/style.h>
 #include <gui/main_window.h>
 #include <gui/widgets/folder_select.h>
-#include <gui/widgets/file_select.h>
 #include <signal_path/signal_path.h>
 #include <radio_interface.h>
 #include <dsp/noise_reduction/spectrum_noise.h>
@@ -21,7 +20,6 @@
 #include "channel_scan.h"
 #include "clip_player.h"
 #include "recording.h"
-#include "transcriber.h"
 #include "transmission_recorder.h"
 
 SDRPP_MOD_INFO{
@@ -40,7 +38,7 @@ using Clock = std::chrono::steady_clock;
 // where VFOs are created and deleted and where tuning normally happens, so no locking is needed.
 class ScannerModule : public ModuleManager::Instance {
 public:
-    ScannerModule(std::string name) : recordFolder(DEFAULT_RECORD_FOLDER), modelFile(DEFAULT_WHISPER_MODEL, { "Whisper Models (*.bin)", "*.bin" }) {
+    ScannerModule(std::string name) : recordFolder(DEFAULT_RECORD_FOLDER) {
         this->name = name;
         loadConfig();
         refreshBookmarkLists();
@@ -53,16 +51,12 @@ public:
 
     ~ScannerModule() {
         stop("");
-        // Transmissions still waiting for their text are logged without it
-        transcriber.stop();
-        for (auto& [id, entry] : pendingLog) { writeActivityRow(entry); }
         gui::mainWindow.onFrame.unbindHandler(&frameHandler);
         gui::menu.removeEntry(name);
     }
 
     void postInit() {
         player.selectDefaultSink();
-        if (transcribe) { transcriber.start(modelFile.expandString(modelFile.path)); }
     }
 
     void enable() {
@@ -79,8 +73,6 @@ public:
     }
 
 private:
-    struct Activity;
-
     enum class State {
         Tuning,
         Searching,
@@ -183,7 +175,6 @@ private:
         _this->drawWarnings();
         _this->drawPriority();
         _this->drawRecording();
-        _this->drawTranscription();
         _this->drawActivity();
         _this->drawAutoSkips();
         _this->drawExclusions();
@@ -278,12 +269,6 @@ private:
                 ImGui::SameLine();
             }
             ImGui::Text("%s  %.5f MHz  %4.1fs  %4.1f dB  %s", entry.time.c_str(), entry.freq / 1e6, entry.seconds, entry.peakSNR, entry.name.c_str());
-            if (entry.transcribing) { ImGui::TextDisabled("    transcribing..."); }
-            else if (!entry.transcript.empty()) {
-                ImGui::Indent();
-                ImGui::TextWrapped("%s", entry.transcript.c_str());
-                ImGui::Unindent();
-            }
         }
 
         if (stopPlaying) { player.stop(); }
@@ -310,48 +295,6 @@ private:
 
         if (recordFreqs.empty()) { ImGui::TextDisabled("Add the frequencies to record"); }
         if (drawFrequencyList("record", recordFreqs, recordMHz)) { saveConfig(); }
-    }
-
-    // What was said, as text in the activity log, by speech recognition trained on ATC
-    void drawTranscription() {
-        if (!ImGui::CollapsingHeader(("Transcription##scanner_transcription_" + name).c_str())) { return; }
-        if (!Transcriber::available()) {
-            ImGui::TextWrapped("Not in this build, it needs whisper.cpp.");
-            return;
-        }
-
-        if (ImGui::Checkbox(("Transcribe transmissions##scanner_transcribe_" + name).c_str(), &transcribe)) {
-            updateTranscriber();
-            saveConfig();
-        }
-        ImGui::LeftLabel("Model");
-        if (modelFile.render("##scanner_whisper_model_" + name) && modelFile.pathIsValid()) {
-            updateTranscriber();
-            saveConfig();
-        }
-        if (transcribe) { ImGui::TextDisabled("%s", transcriber.status().c_str()); }
-    }
-
-    void updateTranscriber() {
-        if (transcribe) { transcriber.start(modelFile.expandString(modelFile.path)); }
-        else { transcriber.stop(); }
-        updateRecorder();
-    }
-
-    // Transcripts that are done: shown, and their transmission logged
-    void collectTranscripts() {
-        for (const auto& result : transcriber.take()) {
-            for (auto& entry : activity) {
-                if (entry.id != result.id) { continue; }
-                entry.transcript = result.text;
-                entry.transcribing = false;
-            }
-            auto it = pendingLog.find(result.id);
-            if (it == pendingLog.end()) { continue; }
-            it->second.transcript = result.text;
-            writeActivityRow(it->second);
-            pendingLog.erase(it);
-        }
     }
 
     // Channels that take over from anything else as soon as they are active in the tuning window,
@@ -392,7 +335,7 @@ private:
     }
 
     void updateRecorder() {
-        if (running && (recordMode != RECORD_OFF || transcribe)) {
+        if (running && recordMode != RECORD_OFF) {
             recorder.attach(vfoName);
             return;
         }
@@ -431,11 +374,7 @@ private:
     }
 
     void startClip(double freq) {
-        if (!recordsChannel(freq)) {
-            // Not kept as a file, only heard by the speech recognition
-            if (transcribe) { recorder.start(""); }
-            return;
-        }
+        if (!recordsChannel(freq)) { return; }
         char buf[64];
         std::time_t t = std::chrono::system_clock::to_time_t(receiveWallStart);
         std::strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", std::localtime(&t));
@@ -453,19 +392,18 @@ private:
     void endReceive(Clock::time_point now) {
         // Already finished when the user tuned away
         if (tunedAway) { return; }
-        TransmissionRecorder::Finished finished = recorder.finish(confirmedAfterListen);
+        std::string clip = recorder.finish(confirmedAfterListen);
         if (confirmedAfterListen) {
             // It works, earlier false starts here were something else
             falseStarts.erase(std::llround(receivingFreq));
-            logActivity(now, finished);
+            logActivity(now, clip);
         }
-        if (recordMode == RECORD_OFF && !transcribe) { recorder.detach(); }
+        if (recordMode == RECORD_OFF) { recorder.detach(); }
     }
 
-    void logActivity(Clock::time_point now, TransmissionRecorder::Finished& finished) {
+    void logActivity(Clock::time_point now, const std::string& clip) {
         Activity entry;
-        entry.id = nextActivityId++;
-        entry.clip = finished.path;
+        entry.clip = clip;
         entry.freq = receivingFreq;
         entry.name = bookmarkName(receivingFreq);
         entry.seconds = std::chrono::duration<double>(now - receiveStart).count();
@@ -474,31 +412,18 @@ private:
         std::time_t t = std::chrono::system_clock::to_time_t(receiveWallStart);
         std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
         entry.time = buf;
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d,%H:%M:%S", std::localtime(&t));
-        entry.dateTime = buf;
-
-        // Written to the log once the text is there, the speech recognition takes a few seconds
-        entry.transcribing = transcriber.running() && !finished.audio.empty();
-        if (entry.transcribing) {
-            pendingLog[entry.id] = entry;
-            transcriber.add(entry.id, std::move(finished.audio), finished.sampleRate);
-        }
-        else {
-            writeActivityRow(entry);
-        }
 
         activity.push_back(entry);
         if (activity.size() > MAX_ACTIVITY) { activity.erase(activity.begin()); }
-    }
 
-    void writeActivityRow(const Activity& entry) {
         std::string path = core::args["root"].s() + "/scanner_activity.csv";
         moveOutdatedActivityLog(path);
         bool exists = std::filesystem::exists(path);
         std::ofstream file(path, std::ios::app);
         if (!exists) { file << ACTIVITY_HEADER << "\n"; }
-        std::string clipName = entry.clip.empty() ? "" : std::filesystem::path(entry.clip).filename().string();
-        file << entry.dateTime << "," << std::fixed << std::setprecision(5) << entry.freq / 1e6 << "," << csvField(entry.name) << "," << std::setprecision(1) << entry.seconds << "," << entry.peakSNR << "," << csvField(clipName) << "," << csvField(entry.transcript) << "\n";
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d,%H:%M:%S", std::localtime(&t));
+        std::string clipName = clip.empty() ? "" : std::filesystem::path(clip).filename().string();
+        file << buf << "," << std::fixed << std::setprecision(5) << entry.freq / 1e6 << "," << csvField(entry.name) << "," << std::setprecision(1) << entry.seconds << "," << entry.peakSNR << "," << csvField(clipName) << "\n";
     }
 
     static std::string csvField(const std::string& value) {
@@ -716,7 +641,6 @@ private:
     static void frameEventHandler(bool playing, void* ctx) {
         ScannerModule* _this = (ScannerModule*)ctx;
         _this->player.poll();
-        _this->collectTranscripts();
         if (!_this->running) { return; }
 
         auto now = Clock::now();
@@ -1332,8 +1256,6 @@ private:
         if (conf.contains("mode")) { mode = conf["mode"]; }
         if (conf.contains("bookmarkList")) { bookmarkList = conf["bookmarkList"]; }
         if (conf.contains("recordMode")) { recordMode = conf["recordMode"]; }
-        if (conf.contains("transcribe")) { transcribe = conf["transcribe"]; }
-        if (conf.contains("whisperModel")) { modelFile.setPath(conf["whisperModel"]); }
         if (conf.contains("priorityFrequencies")) {
             priorityFreqs.clear();
             for (long long freq : conf["priorityFrequencies"]) {
@@ -1369,8 +1291,6 @@ private:
         conf["mode"] = mode;
         conf["bookmarkList"] = bookmarkList;
         conf["recordMode"] = recordMode;
-        conf["transcribe"] = transcribe;
-        conf["whisperModel"] = modelFile.path;
         conf["priorityFrequencies"] = priorityFreqs;
         conf["recordFolder"] = recordFolder.path;
         conf["recordFrequencies"] = recordFreqs;
@@ -1391,8 +1311,7 @@ private:
     static constexpr int RECORD_ALL = 1;
     static constexpr int RECORD_SELECTED = 2;
     static constexpr const char* DEFAULT_RECORD_FOLDER = "%ROOT%/recordings/scanner";
-    static constexpr const char* ACTIVITY_HEADER = "date,time,frequency_mhz,name,duration_s,peak_snr_db,recording,transcript";
-    static constexpr const char* DEFAULT_WHISPER_MODEL = "%ROOT%/whisper/whisper-large-v3-finetuned-for-ATC-ggml.bin";
+    static constexpr const char* ACTIVITY_HEADER = "date,time,frequency_mhz,name,duration_s,peak_snr_db,recording";
 
     // Every new FFT frame is evaluated, the tick only bounds how often the FFT is polled
     static constexpr int TICK_MS = 5;
@@ -1456,21 +1375,14 @@ private:
     std::map<long long, Clock::time_point> tempSkips;
 
     struct Activity {
-        int id = 0;
         std::string time;
-        std::string dateTime;
         double freq;
         std::string name;
         double seconds;
         float peakSNR;
         std::string clip;
-        bool transcribing = false;
-        std::string transcript;
     };
     std::vector<Activity> activity;
-    // Logged once their transcript is done, by id
-    std::map<int, Activity> pendingLog;
-    int nextActivityId = 1;
     static constexpr size_t MAX_ACTIVITY = 50;
     std::chrono::system_clock::time_point receiveWallStart;
     float receivePeakSNR = 0.0f;
@@ -1506,10 +1418,6 @@ private:
     FolderSelect recordFolder;
     TransmissionRecorder recorder;
     ClipPlayer player;
-
-    bool transcribe = false;
-    FileSelect modelFile;
-    Transcriber transcriber;
 
     bool running = false;
     std::string error;

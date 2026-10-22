@@ -25,9 +25,8 @@ jobs:
         - uses: actions/checkout@v4
 
         - name: Install dependencies
-          run: brew install pkg-config libusb fftw glfw portaudio zstd volk whisper-cpp
+          run: brew install pkg-config libusb fftw glfw portaudio zstd volk
 
-        # whisper-cpp is for the scanner's speech recognition, its ggml backends go into the bundle
         # The RTL-SDR driver is bundled (source_modules/rtl_sdr_source/librtlsdr), only libusb is needed for it
         - name: Configure
           run: >
