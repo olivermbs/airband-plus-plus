@@ -17,6 +17,18 @@
 #include <iomanip>
 #include <map>
 #include <set>
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#else
+extern char** environ;
+#endif
+#endif
 #include "channel_scan.h"
 #include "clip_player.h"
 #include "recording.h"
@@ -280,24 +292,68 @@ private:
 
     // Each transmission to its own file, all of them or only those on chosen frequencies
     void drawRecording() {
-        if (!ImGui::CollapsingHeader(("Recording##scanner_recording_" + name).c_str())) { return; }
+        // The header says what is being recorded, ### keeps it the same item when that changes
+        const char* summary = (recordMode == RECORD_ALL) ? "every transmission" : (recordMode == RECORD_SELECTED) ? "listed frequencies" : "off";
+        std::string header = std::string("Recording: ") + summary + "###scanner_recording_" + name;
+        if (!ImGui::CollapsingHeader(header.c_str())) { return; }
         float menuWidth = ImGui::GetContentRegionAvail().x;
+
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("Saves each transmission the scanner stops on as its own audio file, play them back under Activity.");
+        ImGui::PopTextWrapPos();
 
         ImGui::LeftLabel("Record");
         ImGui::SetNextItemWidth(menuWidth - ImGui::GetCursorPosX());
-        if (ImGui::Combo(("##scanner_record_mode_" + name).c_str(), &recordMode, "Off\0All Transmissions\0Selected Frequencies\0")) {
+        if (ImGui::Combo(("##scanner_record_mode_" + name).c_str(), &recordMode, "Off\0Every transmission\0Only listed frequencies\0")) {
             updateRecorder();
             saveConfig();
         }
         if (recordMode == RECORD_OFF) { return; }
 
+        ImGui::LeftLabel("Folder");
         if (recordFolder.render("##scanner_record_folder_" + name) && recordFolder.pathIsValid()) {
             saveConfig();
         }
-        if (recordMode != RECORD_SELECTED) { return; }
+        if (ImGui::Button(("Open Folder##scanner_record_open_" + name).c_str(), ImVec2(menuWidth, 0))) {
+            openFolder(recordFolder.expandString(recordFolder.path));
+        }
+        if (clipsSaved == 0) { ImGui::TextDisabled("Nothing saved since start"); }
+        else { ImGui::TextDisabled("%d saved since start, last %s", clipsSaved, lastClip.c_str()); }
 
-        if (recordFreqs.empty()) { ImGui::TextDisabled("Add the frequencies to record"); }
+        if (recordMode != RECORD_SELECTED) { return; }
+        ImGui::TextUnformatted("Frequencies to record:");
+        if (recordFreqs.empty()) { ImGui::TextDisabled("None yet, add them below"); }
         if (drawFrequencyList("record", recordFreqs, recordMHz)) { saveConfig(); }
+    }
+
+    // Shows a folder in the system's file manager
+    static void openFolder(const std::string& path) {
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+#if defined(_WIN32)
+        ShellExecuteA(NULL, "open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#else
+#ifdef __APPLE__
+        const char* opener = "open";
+#else
+        const char* opener = "xdg-open";
+#endif
+        // Without a shell, the path is passed as it is whatever it contains
+        pid_t pid;
+        char* argv[] = { (char*)opener, (char*)path.c_str(), NULL };
+#ifdef __APPLE__
+        // A plugin can't reach environ directly on macOS
+        char** env = *_NSGetEnviron();
+#else
+        char** env = environ;
+#endif
+        if (posix_spawnp(&pid, opener, NULL, NULL, argv, env) != 0) {
+            flog::error("Scanner: could not open {0}", path);
+            return;
+        }
+        // It hands the folder to the file manager and returns at once
+        waitpid(pid, NULL, 0);
+#endif
     }
 
     // Channels that take over from anything else as soon as they are active in the tuning window,
@@ -396,6 +452,14 @@ private:
         // Already finished when the user tuned away
         if (tunedAway) { return; }
         std::string clip = recorder.finish(confirmedAfterListen);
+        if (!clip.empty()) {
+            clipsSaved++;
+            char buf[64];
+            std::time_t t = std::chrono::system_clock::to_time_t(receiveWallStart);
+            std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+            snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " %.5f MHz", receivingFreq / 1e6);
+            lastClip = buf;
+        }
         if (confirmedAfterListen) {
             // It works, earlier false starts here were something else
             falseStarts.erase(std::llround(receivingFreq));
@@ -1438,6 +1502,8 @@ private:
     std::set<long long> recordFreqs = { 121500000 };
     double recordMHz = 121.5;
     FolderSelect recordFolder;
+    int clipsSaved = 0;
+    std::string lastClip;
     TransmissionRecorder recorder;
     ClipPlayer player;
 
