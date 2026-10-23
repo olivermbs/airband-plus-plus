@@ -31,6 +31,7 @@ extern char** environ;
 #endif
 #include "channel_scan.h"
 #include "clip_player.h"
+#include "iq_recorder.h"
 #include "recording.h"
 #include "transmission_recorder.h"
 
@@ -310,6 +311,12 @@ private:
         }
         if (recordMode == RECORD_OFF) { return; }
 
+        if (ImGui::Checkbox(("Also save the raw signal##scanner_record_iq_" + name).c_str(), &saveIq)) {
+            updateRecorder();
+            saveConfig();
+        }
+        if (saveIq) { ImGui::TextDisabled("I/Q next to each clip, for tuning the audio offline"); }
+
         ImGui::LeftLabel("Folder");
         if (recordFolder.render("##scanner_record_folder_" + name) && recordFolder.pathIsValid()) {
             saveConfig();
@@ -394,6 +401,8 @@ private:
     }
 
     void updateRecorder() {
+        if (running && recordMode != RECORD_OFF && saveIq) { iqRecorder.enable(); }
+        else { iqRecorder.disable(); }
         if (running && recordMode != RECORD_OFF) {
             recorder.attach(vfoName);
             return;
@@ -444,7 +453,10 @@ private:
         if (!label.empty()) { fileName += "_" + scan::fileNamePart(label); }
 
         std::string base = recordFolder.expandString(recordFolder.path) + "/" + fileName;
-        recorder.start(scan::uniquePath(base, ".wav", [](const std::string& path) { return std::filesystem::exists(path); }));
+        std::string path = scan::uniquePath(base, ".wav", [](const std::string& path) { return std::filesystem::exists(path); });
+        recorder.start(path);
+        // The channel itself, wherever the radio follows a carrier within it
+        if (iqRecorder.isEnabled()) { iqRecorder.start(path.substr(0, path.size() - 4) + "_iq.wav", freq - gui::waterfall.getCenterFrequency()); }
     }
 
     // Ends what was received on the channel: logged and its recording kept only if it was heard
@@ -452,6 +464,7 @@ private:
         // Already finished when the user tuned away
         if (tunedAway) { return; }
         std::string clip = recorder.finish(confirmedAfterListen);
+        iqRecorder.finish(!clip.empty());
         if (!clip.empty()) {
             clipsSaved++;
             char buf[64];
@@ -1339,6 +1352,7 @@ private:
         if (conf.contains("mode")) { mode = conf["mode"]; }
         if (conf.contains("bookmarkList")) { bookmarkList = conf["bookmarkList"]; }
         if (conf.contains("recordMode")) { recordMode = conf["recordMode"]; }
+        if (conf.contains("saveIq")) { saveIq = conf["saveIq"]; }
         if (conf.contains("skipDataChannels")) { skipDataChannels = conf["skipDataChannels"]; }
         if (conf.contains("priorityFrequencies")) {
             priorityFreqs.clear();
@@ -1375,6 +1389,7 @@ private:
         conf["mode"] = mode;
         conf["bookmarkList"] = bookmarkList;
         conf["recordMode"] = recordMode;
+        conf["saveIq"] = saveIq;
         conf["skipDataChannels"] = skipDataChannels;
         conf["priorityFrequencies"] = priorityFreqs;
         conf["recordFolder"] = recordFolder.path;
@@ -1502,6 +1517,8 @@ private:
     std::set<long long> recordFreqs = { 121500000 };
     double recordMHz = 121.5;
     FolderSelect recordFolder;
+    bool saveIq = false;
+    IqRecorder iqRecorder;
     int clipsSaved = 0;
     std::string lastClip;
     TransmissionRecorder recorder;
