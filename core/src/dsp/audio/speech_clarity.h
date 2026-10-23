@@ -12,12 +12,13 @@ namespace dsp::audio {
     //   there is sound, the squelch gate's silence would otherwise pull it up between overs.
     // - Limiter: peaks would otherwise clip at the sound card.
     // Chosen by ear on airband recordings, with 50% noise reduction before it. Speech comes out
-    // around -17dBFS, the level of the version that sounded best.
+    // around -12dBFS, at least as loud as the radio without it, the limiter touching about 0.1%
+    // of the samples.
     class SpeechClarity {
     public:
         static constexpr float CEILING = 0.891250938f; // -1dBFS
         // Level the envelope is brought to, it follows syllable peaks so speech averages lower
-        static constexpr double TARGET_DB = -13.0;
+        static constexpr double TARGET_DB = -6.0;
 
         void setSamplerate(double samplerate) {
             const double PRESENCE_HZ = 2200.0;
@@ -127,10 +128,12 @@ namespace dsp::audio {
 
         // The squelch gate outputs exact zeros while closed, its fades are well above this
         static constexpr float SILENCE = 1e-5f;
-        static constexpr double TARGET = 0.223872114; // TARGET_DB as amplitude
+        static constexpr double TARGET = 0.501187234; // TARGET_DB as amplitude
         // Carrier AGC puts a fully modulated transmitter near full scale
         static constexpr double MIN_GAIN = 0.063095734; // -24dB
-        static constexpr double MAX_GAIN = 7.943282347; // +18dB, more only raises the noise of weak signals
+        // +25dB: a weak transmission comes out as loud as the others, more would only raise the
+        // noise between its words
+        static constexpr double MAX_GAIN = 17.782794100;
         static constexpr double ENV_ATTACK_S = 0.010;
         static constexpr double ENV_RELEASE_S = 0.400;
         static constexpr double GAIN_SMOOTHING_S = 0.050;
