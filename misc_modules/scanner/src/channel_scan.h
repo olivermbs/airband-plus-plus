@@ -145,6 +145,24 @@ namespace scan {
         return best ? *best : "";
     }
 
+    // Data link frequencies, ACARS (MSK) and VDL Mode 2 (D8PSK) used in Europe and worldwide.
+    // They carry no voice and stop the scanner with bursts of buzzing.
+    inline const std::vector<double>& dataChannels() {
+        static const std::vector<double> channels = {
+            131525000.0, 131550000.0, 131725000.0, 131825000.0, 131850000.0,
+            136725000.0, 136775000.0, 136825000.0, 136875000.0, 136975000.0
+        };
+        return channels;
+    }
+
+    inline bool isDataChannel(double freq) {
+        const double TOLERANCE = 1.0;
+        for (double channel : dataChannels()) {
+            if (std::fabs(channel - freq) < TOLERANCE) { return true; }
+        }
+        return false;
+    }
+
     // Minutes a channel is skipped automatically, longer each time it happens again. Priority
     // channels never go beyond the first step, something important may start there any time.
     inline int autoSkipMinutes(int strikes, bool priority) {

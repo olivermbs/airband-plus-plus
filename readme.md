@@ -10,7 +10,7 @@ What it adds on top of SDR++:
   * Offset carrier systems: on the 8.33 kHz grid a carrier several kHz off is credited to the 25 kHz channel it belongs to, and the aircraft answering on the channel itself is followed too.
   * Reply watch: the other side of a conversation slightly off the channel is heard too.
   * Priority channels (121.5 MHz by default): always scanned, go first, take over as soon as they are active in the tuning window, and their window is revisited at least every 3 seconds.
-  * Exclusions and lockouts, automatic skipping of spurs, stuck carriers and continuous broadcasts with cooldowns that grow on repeats, an activity log with the Frequency Manager's bookmark names.
+  * Exclusions and lockouts, the ACARS and VDL2 data link channels skipped with one switch, automatic skipping of spurs, stuck carriers and continuous broadcasts with cooldowns that grow on repeats, an activity log with the Frequency Manager's bookmark names.
 * **Transmission recording**: the scanner saves each transmission to its own WAV file, named after time, frequency and bookmark, for every channel or only chosen frequencies (121.5 MHz by default), with long pauses shortened and false starts thrown away. Clips play back from the activity log on their own audio output.
 * **Clarity**: a voice processor for AM: presence EQ that lifts the consonants (+6 dB around 2.2 kHz) and cuts the hiss above the voice, a leveler so weak aircraft and loud ground stations come out equally loud, and a limiter against clipping. Chosen by ear on airband recordings.
 * **Audio for weak AM**: synchronous AM detection, noise reduction, a 300 Hz high-pass, a 6 kHz filter (airband voice reaches 2.5-3 kHz either side of the carrier, measured).

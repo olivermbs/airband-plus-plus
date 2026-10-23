@@ -185,6 +185,15 @@ TEST(offset_carriers_belong_to_their_25k_channel) {
     CHECK_NEAR(carrierSearchHalfWidth(false, STEP_833), STEP_833 / 2.0, 0.001);
 }
 
+TEST(data_channels_are_known_exactly) {
+    CHECK(isDataChannel(131725000.0));
+    CHECK(isDataChannel(136975000.0));
+    // On the 8.33kHz grid, as the scanner computes it
+    CHECK(isDataChannel(gridChannels({ 118000000.0, 136991666.667, STEP_833 })[1647]));
+    CHECK(!isDataChannel(131733333.3));
+    CHECK(!isDataChannel(121500000.0));
+}
+
 TEST(bookmark_names_match_within_the_tolerance) {
     std::vector<std::pair<double, std::string>> bookmarks = { { 118100000.0, "TWR" }, { 118108333.3, "APP" }, { 121500000.0, "Guard" } };
     CHECK(bookmarkAt(bookmarks, 118100000.0, 500.0) == "TWR");

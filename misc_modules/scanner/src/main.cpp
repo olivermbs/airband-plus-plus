@@ -490,6 +490,21 @@ private:
         std::string header = "Excluded (" + std::to_string(lockouts.size()) + ")##scanner_lockouts_" + name;
         if (!ImGui::CollapsingHeader(header.c_str())) { return; }
 
+        if (ImGui::Checkbox(("Skip data channels (ACARS, VDL2)##scanner_skip_data_" + name).c_str(), &skipDataChannels)) {
+            saveConfig();
+        }
+        if (skipDataChannels) {
+            std::string list;
+            for (double freq : scan::dataChannels()) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "%.3f", freq / 1e6);
+                list += (list.empty() ? "" : ", ") + std::string(buf);
+            }
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", list.c_str());
+            ImGui::PopTextWrapPos();
+        }
+
         float addWidth = ImGui::CalcTextSize("Exclude").x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - addWidth - ImGui::GetStyle().ItemSpacing.x);
         ImGui::InputDouble(("##scanner_exclude_freq_" + name).c_str(), &excludeMHz, 0.0, 0.0, "%.5f MHz");
@@ -605,7 +620,7 @@ private:
         all.erase(std::unique(all.begin(), all.end(), [](double a, double b) { return std::fabs(a - b) < 1.0; }), all.end());
         channels.clear();
         for (double freq : all) {
-            if (!lockouts.count(std::llround(freq))) { channels.push_back(freq); }
+            if (!lockouts.count(std::llround(freq)) && !(skipDataChannels && scan::isDataChannel(freq))) { channels.push_back(freq); }
         }
         if (channels.empty()) {
             error = (mode == MODE_RANGE) ? "Invalid frequency range" : ("No bookmarks in list \"" + scannedList + "\"");
@@ -1085,6 +1100,7 @@ private:
     bool isSkipped(double freq, Clock::time_point now) {
         long long key = std::llround(freq);
         if (lockouts.count(key)) { return true; }
+        if (skipDataChannels && scan::isDataChannel(freq)) { return true; }
 
         auto autoIt = autoSkips.find(key);
         if (autoIt != autoSkips.end()) {
@@ -1259,6 +1275,7 @@ private:
         if (conf.contains("mode")) { mode = conf["mode"]; }
         if (conf.contains("bookmarkList")) { bookmarkList = conf["bookmarkList"]; }
         if (conf.contains("recordMode")) { recordMode = conf["recordMode"]; }
+        if (conf.contains("skipDataChannels")) { skipDataChannels = conf["skipDataChannels"]; }
         if (conf.contains("priorityFrequencies")) {
             priorityFreqs.clear();
             for (long long freq : conf["priorityFrequencies"]) {
@@ -1294,6 +1311,7 @@ private:
         conf["mode"] = mode;
         conf["bookmarkList"] = bookmarkList;
         conf["recordMode"] = recordMode;
+        conf["skipDataChannels"] = skipDataChannels;
         conf["priorityFrequencies"] = priorityFreqs;
         conf["recordFolder"] = recordFolder.path;
         conf["recordFrequencies"] = recordFreqs;
@@ -1375,6 +1393,7 @@ private:
     float replyWatchKHz = 10.0f;
     std::map<int, int> replyHits;
     std::set<long long> lockouts;
+    bool skipDataChannels = true;
     std::map<long long, Clock::time_point> tempSkips;
 
     struct Activity {
