@@ -15,6 +15,7 @@ What it adds on top of SDR++:
 * **Clarity**: a voice processor for AM: presence EQ that lifts the consonants (+6 dB around 2.2 kHz) and cuts the hiss above the voice, a leveler so weak aircraft and loud ground stations come out equally loud, and a limiter against clipping. Chosen by ear on airband recordings.
 * **Audio for weak AM**: synchronous AM detection, noise reduction, a 300 Hz high-pass, a 6 kHz filter (airband voice reaches 2.5-3 kHz either side of the carrier, measured).
 * **Auto squelch**: follows the noise floor measured from the spectrum around the channel, closes immediately on retune, clean fades instead of clicks.
+* **Find Best Gain**: a button in the RTL-SDR source steps through every gain, measures the noise floor, ADC clipping and spurs at each, and sets the gain where more stops improving the signal to noise ratio, kept clear of overload (strong FM broadcast mixing into the airband).
 * **RTL-SDR**: a bundled, patched librtlsdr (from the RTL-SDR Blog fork, for the V4) that survives the dongle being unplugged or losing power, recovers by itself, and retunes about a third faster; retuning off the GUI thread.
 * **Fixes from other SDR++ forks**: audio keeps running without an output device instead of freezing the spectrum, the rigctl server no longer leaks a socket per client and works with WSJT-X and JS8Call in VFO mode, the SDR++ server source notices a dead link.
 * **Performance and fixes**: waterfall uploads only new lines, UI frame rate limit, many smaller bug fixes.

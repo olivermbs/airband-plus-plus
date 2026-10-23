@@ -12,6 +12,7 @@
 #include <config.h>
 #include <gui/smgui.h>
 #include <rtl-sdr.h>
+#include "gain_finder.h"
 
 #ifdef __ANDROID__
 #include <android_backend.h>
@@ -540,7 +541,9 @@ private:
             }
         }
 
-        if (_this->tunerAgc || _this->gainList.size() == 0) { SmGui::BeginDisabled(); }
+        // Captured once, the slider must end the disabled state it began
+        bool gainLocked = _this->tunerAgc || _this->gainList.size() == 0 || _this->sweeping;
+        if (gainLocked) { SmGui::BeginDisabled(); }
 
         SmGui::LeftLabel("Gain");
         SmGui::FillWidth();
@@ -575,8 +578,9 @@ private:
             }
         }
 
-        
-        if (_this->tunerAgc || _this->gainList.size() == 0) { SmGui::EndDisabled(); }
+        if (gainLocked) { SmGui::EndDisabled(); }
+
+        if (!_this->serverMode) { _this->drawGainFinder(); }
 
         if (SmGui::Checkbox(CONCAT("Bias T##_rtlsdr_rtl_biast_", _this->name), &_this->biasT)) {
             if (_this->running) {
@@ -651,6 +655,7 @@ private:
 
     static void frameEventHandler(bool playing, void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
+        if (_this->sweeping) { _this->sweepStep(playing); }
 
         if (_this->deviceLost) {
             _this->deviceLost = false;
@@ -703,12 +708,185 @@ private:
             return table;
         }();
 
+        // Samples at the ends of the 8-bit range, only while the gain finder measures
+        if (_this->countClips) {
+            uint64_t clipped = 0;
+            for (uint32_t i = 0; i < len; i++) { clipped += (buf[i] == 0 || buf[i] == 255); }
+            _this->clippedSamples += clipped;
+            _this->countedSamples += len;
+        }
+
         int sampCount = len / 2;
         for (int i = 0; i < sampCount; i++) {
             _this->stream.writeBuf[i].re = conversion[buf[i * 2]];
             _this->stream.writeBuf[i].im = conversion[buf[(i * 2) + 1]];
         }
         if (!_this->stream.swap(sampCount)) { return; }
+    }
+
+    // "Find Best Gain": steps through every gain, measures each, and sets the best one
+    void drawGainFinder() {
+        float width = ImGui::GetContentRegionAvail().x;
+        bool canRun = running && !tunerAgc && !gainList.empty();
+        if (sweeping) {
+            char overlay[64];
+            snprintf(overlay, sizeof(overlay), "Testing %.1f dB", (float)gainList[std::min<int>(sweepIndex, gainList.size() - 1)] / 10.0f);
+            float half = (width - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
+            ImGui::ProgressBar((float)sweepIndex / (float)gainList.size(), ImVec2(half, 0), overlay);
+            ImGui::SameLine();
+            if (ImGui::Button(CONCAT("Cancel##_rtlsdr_gain_cancel_", name), ImVec2(half, 0))) { endSweep("Cancelled, the gain is as it was", true); }
+        }
+        else {
+            if (!canRun) { style::beginDisabled(); }
+            if (ImGui::Button(CONCAT("Find Best Gain##_rtlsdr_gain_find_", name), ImVec2(width, 0))) { startSweep(); }
+            if (!canRun) { style::endDisabled(); }
+            if (!running) { ImGui::TextDisabled("Start the SDR to test the gain"); }
+            else if (tunerAgc) { ImGui::TextDisabled("Turn the tuner AGC off to test the gain"); }
+        }
+
+        if (!sweepMessage.empty()) { ImGui::TextWrapped("%s", sweepMessage.c_str()); }
+        if (sweepResult.empty() || sweeping) { return; }
+
+        // Noise floor against gain, the chosen gain is where its rise levels off
+        std::vector<float> floors;
+        for (const auto& step : sweepResult) { floors.push_back(step.floorDb); }
+        ImGui::PlotLines(CONCAT("##_rtlsdr_gain_plot_", name), floors.data(), (int)floors.size(), 0, "noise floor by gain", FLT_MAX, FLT_MAX, ImVec2(width, 60.0f * style::uiScale));
+        if (previousGainId >= 0 && previousGainId != gainId) {
+            if (ImGui::Button(CONCAT("Undo##_rtlsdr_gain_undo_", name), ImVec2(width, 0))) {
+                applyGain(previousGainId);
+                sweepMessage = "Back to " + gainText(gainId);
+                previousGainId = -1;
+            }
+        }
+    }
+
+    void startSweep() {
+        if (!setTunerGain(gainList[0])) {
+            sweepMessage = "The dongle didn't take the gain, try again";
+            return;
+        }
+        sweeping = true;
+        sweepIndex = 0;
+        sweepSteps.clear();
+        sweepResult.clear();
+        sweepMessage = "Keep the frequency where you listen while it runs, stop the scanner first";
+        previousGainId = gainId;
+        sweepCenter = gui::waterfall.getCenterFrequency();
+        sweepPhase = SweepPhase::Settling;
+        sweepPhaseStart = std::chrono::steady_clock::now();
+    }
+
+    void endSweep(const std::string& message, bool restoreGain) {
+        countClips = false;
+        sweeping = false;
+        sweepMessage = message;
+        if (restoreGain) {
+            setTunerGain(gainList[gainId]);
+            previousGainId = -1;
+        }
+    }
+
+    void sweepStep(bool playing) {
+        if (!running || !playing) {
+            endSweep("Stopped, the SDR stopped", true);
+            return;
+        }
+        if (std::fabs(gui::waterfall.getCenterFrequency() - sweepCenter) > 1.0) {
+            endSweep("Stopped, the frequency changed. Stop the scanner and try again", true);
+            return;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (sweepPhase == SweepPhase::Settling) {
+            // The new gain takes effect after the samples already in flight
+            if (now - sweepPhaseStart < std::chrono::milliseconds(SWEEP_SETTLE_MS)) { return; }
+            int size = 0;
+            if (gui::waterfall.acquireRawFFT(size, sweepFrame)) { gui::waterfall.releaseRawFFT(); }
+            sweepFrames.clear();
+            sweepFloors.clear();
+            clippedSamples = 0;
+            countedSamples = 0;
+            countClips = true;
+            sweepPhase = SweepPhase::Measuring;
+            return;
+        }
+
+        int size = 0;
+        uint64_t frame = 0;
+        float* fft = gui::waterfall.acquireRawFFT(size, frame);
+        if (!fft) { return; }
+        if (frame == sweepFrame) {
+            gui::waterfall.releaseRawFFT();
+            return;
+        }
+        sweepFrame = frame;
+        std::vector<float> bins(fft, fft + size);
+        gui::waterfall.releaseRawFFT();
+
+        // The dongle's filter rolls off at the edges, the peaks only count in the middle too
+        size_t edge = (size_t)(SWEEP_EDGE_SHARE * (float)bins.size());
+        sweepFloors.push_back(gain::medianFloor(bins, SWEEP_EDGE_SHARE));
+        sweepFrames.push_back(std::vector<float>(bins.begin() + edge, bins.end() - edge));
+        if ((int)sweepFrames.size() < SWEEP_FRAMES) { return; }
+
+        countClips = false;
+        std::vector<float> floors = sweepFloors;
+        std::nth_element(floors.begin(), floors.begin() + floors.size() / 2, floors.end());
+        gain::Step step;
+        step.gain = gainList[sweepIndex];
+        step.floorDb = floors[floors.size() / 2];
+        step.clipped = countedSamples ? (double)clippedSamples / (double)countedSamples : 0.0;
+        step.steadyPeaks = gain::countSteadyPeaks(sweepFrames, sweepFloors, SWEEP_PEAK_DB, SWEEP_PEAK_SHARE);
+        sweepSteps.push_back(step);
+        flog::info("RTL-SDR gain test: {0:.1f} dB, floor {1:.1f} dB, clipped {2:.6f}, steady peaks {3}", step.gain / 10.0f, step.floorDb, step.clipped, step.steadyPeaks);
+
+        sweepIndex++;
+        if (sweepIndex < (int)gainList.size()) {
+            // Measured as this gain only if the dongle took it
+            if (!setTunerGain(gainList[sweepIndex])) {
+                endSweep("Stopped, the dongle didn't take the gain", true);
+                return;
+            }
+            sweepPhase = SweepPhase::Settling;
+            sweepPhaseStart = now;
+            return;
+        }
+
+        gain::Choice choice = gain::choose(sweepSteps);
+        sweepResult = sweepSteps;
+        int chosen = (int)(std::find(gainList.begin(), gainList.end(), sweepSteps[choice.step].gain) - gainList.begin());
+        applyGain(chosen);
+        endSweep("Best gain " + gainText(gainId) + " (was " + gainText(previousGainId) + "). " + choice.reason + ".", false);
+    }
+
+    // The tuner's I2C bus shares the USB link with the samples, a write fails now and then while
+    // streaming and is retried like a retune
+    bool setTunerGain(int tenthsDb) {
+        if (!running) { return false; }
+        std::lock_guard<std::mutex> devLck(devMtx);
+        for (int i = 0; i < TUNE_ATTEMPTS; i++) {
+            if (i > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(TUNE_RETRY_MS)); }
+            if (rtlsdr_set_tuner_gain(openDev, tenthsDb) == 0) { return true; }
+        }
+        flog::warn("RTL-SDR failed to set the gain to {0:.1f} dB", tenthsDb / 10.0f);
+        return false;
+    }
+
+    void applyGain(int id) {
+        gainId = std::clamp<int>(id, 0, (int)gainList.size() - 1);
+        updateGainTxt();
+        setTunerGain(gainList[gainId]);
+        if (selectedDevName.empty()) { return; }
+        config.acquire();
+        config.conf["devices"][selectedDevName]["gain"] = gainId;
+        config.release(true);
+    }
+
+    std::string gainText(int id) {
+        if (id < 0 || id >= (int)gainList.size()) { return "--"; }
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f dB", (float)gainList[id] / 10.0f);
+        return buf;
     }
 
     void updateGainTxt() {
@@ -765,6 +943,31 @@ private:
 
     int gainId = 0;
     static constexpr int DEFAULT_GAIN = 338; // tenths of dB
+
+    enum class SweepPhase {
+        Settling,
+        Measuring
+    };
+    static constexpr int SWEEP_SETTLE_MS = 250;
+    static constexpr int SWEEP_FRAMES = 8;
+    static constexpr float SWEEP_EDGE_SHARE = 0.1f;
+    static constexpr float SWEEP_PEAK_DB = 12.0f;
+    static constexpr float SWEEP_PEAK_SHARE = 0.85f;
+    bool sweeping = false;
+    int sweepIndex = 0;
+    SweepPhase sweepPhase = SweepPhase::Settling;
+    std::chrono::steady_clock::time_point sweepPhaseStart;
+    double sweepCenter = 0.0;
+    uint64_t sweepFrame = 0;
+    std::vector<std::vector<float>> sweepFrames;
+    std::vector<float> sweepFloors;
+    std::vector<gain::Step> sweepSteps;
+    std::vector<gain::Step> sweepResult;
+    std::string sweepMessage;
+    int previousGainId = -1;
+    std::atomic<bool> countClips = false;
+    std::atomic<uint64_t> clippedSamples = 0;
+    std::atomic<uint64_t> countedSamples = 0;
     std::vector<int> gainList;
 
     bool rtlAgc = false;

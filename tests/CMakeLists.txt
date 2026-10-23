@@ -39,3 +39,7 @@ add_test(NAME recording COMMAND test_recording)
 add_executable(test_speech_processor test_speech_processor.cpp)
 target_include_directories(test_speech_processor PRIVATE "../core/src")
 add_test(NAME speech_processor COMMAND test_speech_processor)
+
+add_executable(test_gain_finder test_gain_finder.cpp)
+target_include_directories(test_gain_finder PRIVATE "../source_modules/rtl_sdr_source/src")
+add_test(NAME gain_finder COMMAND test_gain_finder)
