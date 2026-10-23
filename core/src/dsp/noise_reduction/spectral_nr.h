@@ -7,8 +7,11 @@
 namespace dsp::noise_reduction {
     // Audio noise reduction for one channel. Each FFT band is turned down according to its own
     // signal to noise ratio. The noise of each band is its smoothed power at the quietest moments,
-    // so it is learnt during the pauses of speech. The gain is smoothed over time (decision
-    // directed) and never goes below a floor, which avoids the warbling "musical noise".
+    // so it is learnt during the pauses of speech. The gain is Ephraim and Malah's log-MMSE, which
+    // estimates the log spectrum of the speech and leaves it more of its consonants than a Wiener
+    // gain; on airband transmissions with receiver noise it scored best for intelligibility
+    // (STOI) of the variants tried. Its a priori SNR is smoothed over time (decision directed)
+    // and the gain never goes below a floor, which avoids the warbling "musical noise".
     // Overlapping frames (sqrt-Hann windows, 50% overlap) are added back together, the latency is
     // one frame.
     class SpectralNoiseReducer {
@@ -112,10 +115,13 @@ namespace dsp::noise_reduction {
                 // Nothing is reduced before a whole window was seen, the first frames may be speech
                 if (!learnt) { continue; }
 
-                // Decision directed a priori SNR and Wiener gain, never below the floor
+                // Decision directed a priori SNR and log-MMSE gain, never below the floor
                 float post = (noise[k] > 0.0f) ? p / noise[k] : 1e6f;
                 float prior = PRIOR_SMOOTHING * (lastGainedPower[k] / std::max<float>(noise[k], 1e-20f)) + (1.0f - PRIOR_SMOOTHING) * std::max<float>(post - 1.0f, 0.0f);
-                gains[k] = std::max<float>(prior / (1.0f + prior), gainFloor);
+                prior = std::max<float>(prior, MIN_PRIOR);
+                double v = (double)prior * post / (1.0 + prior);
+                float gain = (float)std::min(1.0, prior / (1.0 + prior) * std::exp(0.5 * expint(v)));
+                gains[k] = std::max<float>(gain, gainFloor);
                 lastGainedPower[k] = gains[k] * gains[k] * p;
             }
 
@@ -149,6 +155,15 @@ namespace dsp::noise_reduction {
             std::fill(output.begin() + (size - hop), output.end(), 0.0f);
         }
 
+        // Exponential integral E1 (Abramowitz and Stegun 5.1.53 and 5.1.56), for the log-MMSE gain
+        static double expint(double x) {
+            if (x <= 0.0) { return 1e10; }
+            if (x < 1.0) {
+                return -0.57721566 - std::log(x) + x * (0.99999193 + x * (-0.24991055 + x * (0.05519968 + x * (-0.00976004 + x * 0.00107857))));
+            }
+            return std::exp(-x) / x * (x * x + 2.334733 * x + 0.250621) / (x * x + 3.330657 * x + 1.681534);
+        }
+
         void destroy() {
             if (!time) { return; }
             fftwf_destroy_plan(forward);
@@ -163,6 +178,8 @@ namespace dsp::noise_reduction {
         // frequency only the direct neighbours, wider smoothing pulls the harmonics of voiced
         // speech down to the level of the gaps between them (3.6dB lost over 300Hz).
         static constexpr float PRIOR_SMOOTHING = 0.98f;
+        // About -25dB: the log-MMSE gain grows again for very small a priori SNRs
+        static constexpr float MIN_PRIOR = 0.003f;
         static constexpr int SMOOTH_BINS = 1;
         static constexpr float MINIMUM_BIAS = 1.5f;
         // The gain never goes below the floor: hiss is turned down, not removed, so weak speech
