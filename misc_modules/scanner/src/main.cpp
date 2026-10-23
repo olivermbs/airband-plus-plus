@@ -194,9 +194,12 @@ private:
         }
         ImGui::SameLine();
         if (!receiving) { ImGui::BeginDisabled(); }
-        if (hold) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.4f, 0.0f, 1.0f)); }
-        if (ImGui::Button((std::string(hold ? "Holding" : "Hold") + "##scanner_hold_" + name).c_str(), ImVec2(half, 0))) { hold = !hold; }
-        if (hold) { ImGui::PopStyleColor(); }
+        // The click changes hold, the color is popped as it was pushed: a pop without its push
+        // broke the colors of the whole interface
+        bool holding = hold;
+        if (holding) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.4f, 0.0f, 1.0f)); }
+        if (ImGui::Button((std::string(holding ? "Holding" : "Hold") + "##scanner_hold_" + name).c_str(), ImVec2(half, 0))) { hold = !hold; }
+        if (holding) { ImGui::PopStyleColor(); }
 
         double freq = receiving ? receivingFreq : 0.0;
         if (ImGui::Button(("Skip##scanner_skip_" + name).c_str(), ImVec2(half, 0))) {
