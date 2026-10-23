@@ -1428,12 +1428,14 @@ private:
     // Per frame, about 170ms at the scanner's 60 frames per second: the carrier estimate of a
     // weak signal wobbles from frame to frame, the VFO shouldn't follow the wobble
     static constexpr double CENTER_SMOOTHING = 0.1;
-    // How far the VFO may be off the carrier before it is moved, a 6kHz filter leaves room
+    // How far the VFO may be off the carrier before it is moved, the 8kHz filter leaves room
     // for this and the voice still fits
     static constexpr double CARRIER_FOLLOW_HZ = 300.0;
     // A move larger than this is another transmitter, not drift
     static constexpr double JUMP_HZ = 500.0;
-    static constexpr float AIRBAND_BANDWIDTH = 6000.0f;
+    // As the radio's AM default: the whole voice, a neighbouring 8.33kHz channel's voice only
+    // begins 5.3kHz away
+    static constexpr float AIRBAND_BANDWIDTH = 8000.0f;
     static constexpr int UNMODULATED_CHECK_MS = 4000;
     static constexpr int MIN_MODULATION_FRAMES = 30;
     static constexpr float UNMODULATED_DB = 0.3f;

@@ -87,9 +87,10 @@ namespace demod {
         const char* getName() { return "AM"; }
         double getIFSampleRate() { return 15000.0; }
         double getAFSampleRate() { return getIFSampleRate(); }
-        // Airband voice is 300Hz to 2.5-3kHz either side of the carrier, the scanner keeps the
-        // VFO on the carrier
-        double getDefaultBandwidth() { return 6000.0; }
+        // Airband voice reaches 2.5-3kHz either side of the carrier. A narrower filter starts
+        // rolling off inside it and takes the top of the consonants, 8kHz scored clearer (STOI)
+        // than 6 or 7 on recorded receiver noise; Clarity's low-pass removes the hiss above.
+        double getDefaultBandwidth() { return 8000.0; }
         SquelchMode getDefaultSquelchMode() { return SQUELCH_MODE_AUTO; }
         bool getDefaultHighPass() { return true; }
         // Measured on airband: about 1.5dB clearer overall and 2.5dB in the consonants (2-3kHz)
