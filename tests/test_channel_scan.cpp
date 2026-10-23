@@ -192,6 +192,12 @@ TEST(data_channels_are_known_exactly) {
     CHECK(isDataChannel(gridChannels({ 118000000.0, 136991666.667, STEP_833 })[1647]));
     CHECK(!isDataChannel(131733333.3));
     CHECK(!isDataChannel(121500000.0));
+    // VDL2 spills into the 8.33kHz channels next to it, ACARS doesn't
+    CHECK(isDataChannel(136816666.7));
+    CHECK(isDataChannel(136833333.3));
+    CHECK(isDataChannel(136966666.7));
+    CHECK(!isDataChannel(136800000.0));
+    CHECK(!isDataChannel(131716666.7));
 }
 
 TEST(bookmark_names_match_within_the_tolerance) {

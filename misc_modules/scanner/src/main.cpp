@@ -577,6 +577,7 @@ private:
                 snprintf(buf, sizeof(buf), "%.3f", freq / 1e6);
                 list += (list.empty() ? "" : ", ") + std::string(buf);
             }
+            list += ", and the 8.33kHz channels next to the VDL2 ones";
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextDisabled("%s", list.c_str());
             ImGui::PopTextWrapPos();

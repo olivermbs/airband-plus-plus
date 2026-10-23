@@ -155,10 +155,16 @@ namespace scan {
         return channels;
     }
 
+    // The data channels themselves, and the 8.33kHz channels next to VDL2's: its signal is about
+    // 10kHz wide and spills over into them, ACARS stays within its channel
     inline bool isDataChannel(double freq) {
         const double TOLERANCE = 1.0;
+        const double VDL2_START = 136700000.0;
+        const double NEIGHBOUR = 25000.0 / 3.0;
         for (double channel : dataChannels()) {
             if (std::fabs(channel - freq) < TOLERANCE) { return true; }
+            if (channel < VDL2_START) { continue; }
+            if (std::fabs(std::fabs(channel - freq) - NEIGHBOUR) < TOLERANCE) { return true; }
         }
         return false;
     }
