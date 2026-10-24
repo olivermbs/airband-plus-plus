@@ -700,6 +700,16 @@ private:
         for (double freq : all) {
             if (!lockouts.count(std::llround(freq)) && !(skipDataChannels && scan::isDataChannel(freq))) { channels.push_back(freq); }
         }
+        // A grid's channels each cover half the step around them. Bookmarks have no neighbours
+        // in the list but the next bookmark, one on a 25kHz channel covers its offset carriers.
+        cellWidths.assign(channels.size(), channelHalfWidth());
+        if (mode == MODE_BOOKMARKS) {
+            for (int i = 0; i < (int)channels.size(); i++) {
+                double below = (i > 0) ? channels[i] - channels[i - 1] : 0.0;
+                double above = (i + 1 < (int)channels.size()) ? channels[i + 1] - channels[i] : 0.0;
+                cellWidths[i] = scan::bookmarkHalfWidth(channels[i], below, above, step);
+            }
+        }
         if (channels.empty()) {
             error = (mode == MODE_RANGE) ? "Invalid frequency range" : ("No bookmarks in list \"" + scannedList + "\"");
             return;
@@ -1098,7 +1108,11 @@ private:
     }
 
     float channelSNR(int channel) {
-        return channelSNR(channel, channelHalfWidth());
+        return channelSNR(channel, cellHalfWidth(channel));
+    }
+
+    double cellHalfWidth(int channel) {
+        return (channel >= 0 && channel < (int)cellWidths.size()) ? cellWidths[channel] : channelHalfWidth();
     }
 
     float channelSNR(int channel, double halfWidth) {
@@ -1110,7 +1124,7 @@ private:
 
     // Centered on the full resolution FFT, a carrier is located to within a few Hz
     double carrierCenter(int channel) {
-        return scan::signalCenter(fineSpectrum, channels[channel], channelHalfWidth(), dcGuard());
+        return scan::signalCenter(fineSpectrum, channels[channel], cellHalfWidth(channel), dcGuard());
     }
 
     // Carrier of whoever is talking on the channel being received
@@ -1204,8 +1218,8 @@ private:
         receivingFreq = channels[channel];
         // A 25kHz channel heard on an offset carrier outside its own 8.33kHz cell: its other
         // carriers and the aircraft on the channel itself are looked for within the offset reach
-        bool offsetCarrier = std::fabs(center - receivingFreq) > channelHalfWidth();
-        receiveHalfWidth = scan::carrierSearchHalfWidth(offsetCarrier, step);
+        bool offsetCarrier = std::fabs(center - receivingFreq) > cellHalfWidth(channel);
+        receiveHalfWidth = std::max(cellHalfWidth(channel), scan::carrierSearchHalfWidth(offsetCarrier, step));
         tunedAway = false;
         receivingSNR = snr;
         receiveStart = now;
@@ -1298,7 +1312,8 @@ private:
 
         // On a regular grid DC goes exactly between two channels, bookmarks can be anywhere so
         // DC is kept clear of the whole detection width
-        double dcClearance = (mode == MODE_RANGE) ? step / 2.0 : channelHalfWidth() + DC_CLEARANCE_MARGIN;
+        double widest = cellWidths.empty() ? channelHalfWidth() : *std::max_element(cellWidths.begin(), cellWidths.end());
+        double dcClearance = (mode == MODE_RANGE) ? step / 2.0 : widest + DC_CLEARANCE_MARGIN;
         windows = scan::planWindows(channels, plannedBandwidth * USABLE_BANDWIDTH, dcClearance);
 
         windowSearched.assign(windows.size(), Clock::now());
@@ -1545,6 +1560,8 @@ private:
     double excludeMHz = 121.5;
 
     std::vector<double> channels;
+    // Half width each channel covers, the same for a grid, per bookmark in a list
+    std::vector<double> cellWidths;
     int userFFTRate = 20;
     Clock::time_point sweepStart;
     double lastSweepSeconds = 0.0;

@@ -110,13 +110,15 @@ namespace scan {
     }
 
     // The channel a carrier belongs to. Offset carrier systems put a 25kHz channel's ground
-    // transmitters up to 7.5kHz off it, far more than an 8.33kHz radio strays (they are held to
-    // about 1ppm, 0.1kHz). So on the 8.33kHz grid a carrier clearly off its nearest channel is
-    // one of these, and belongs to the 25kHz channel within reach, not to an 8.33kHz neighbour.
+    // transmitters up to 7.5kHz off it, more than an 8.33kHz radio strays (ICAO: 1ppm on the
+    // ground, 5ppm in the air, at most 0.7kHz). So on the 8.33kHz grid a carrier further off its
+    // nearest channel is one of these, and belongs to the 25kHz channel within reach, not to an
+    // 8.33kHz neighbour. The outer carriers lie within a kHz of a neighbour (LOWK tower,
+    // 118.100, is heard on 118.1074), the tolerance has to stay tighter than that.
     inline double owningChannel(double carrier, double nearest, double step) {
         const double GRID_833 = 25000.0 / 3.0;
         const double CHANNEL_25K = 25000.0;
-        const double TOLERANCE_833 = 1500.0;
+        const double TOLERANCE_833 = 750.0;
         const double OFFSET_REACH = 8000.0;
 
         if (std::fabs(step - GRID_833) > 1.0) { return nearest; }
@@ -130,6 +132,19 @@ namespace scan {
     inline double carrierSearchHalfWidth(bool offsetCarrier, double step) {
         const double OFFSET_REACH = 8000.0;
         return offsetCarrier ? OFFSET_REACH : channelHalfWidth(step);
+    }
+
+    // How far around a bookmark the scanner looks for its carriers. A 25kHz channel reaches its
+    // outer offset carriers, an 8.33kHz one its own cell, and none past half the way to the next
+    // bookmark. Gaps of 0 or less mean there is no bookmark on that side.
+    inline double bookmarkHalfWidth(double freq, double gapBelow, double gapAbove, double step) {
+        const double CHANNEL_25K = 25000.0;
+        const double OFFSET_REACH = 8000.0;
+        bool channel25k = std::fabs(freq - std::round(freq / CHANNEL_25K) * CHANNEL_25K) < 1.0;
+        double reach = channel25k ? OFFSET_REACH : channelHalfWidth(step);
+        if (gapBelow > 0.0) { reach = std::min(reach, gapBelow / 2.0); }
+        if (gapAbove > 0.0) { reach = std::min(reach, gapAbove / 2.0); }
+        return reach;
     }
 
     // Name of the bookmark on a frequency, empty if there is none within the tolerance

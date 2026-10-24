@@ -174,15 +174,28 @@ TEST(signal_center_takes_the_strongest_of_two_carriers_in_a_channel) {
 TEST(offset_carriers_belong_to_their_25k_channel) {
     // 118.100 heard on its offset carriers, which are nearest to 8.33kHz neighbours
     CHECK_NEAR(owningChannel(118105000.0, 118108333.3, STEP_833), 118100000.0, 0.001);
-    CHECK_NEAR(owningChannel(118092500.0, 118091666.7, STEP_833), 118091666.7, 0.001);
-    CHECK_NEAR(owningChannel(118107500.0, 118108333.3, STEP_833), 118108333.3, 0.001);
     CHECK_NEAR(owningChannel(118096000.0, 118100000.0, STEP_833), 118100000.0, 0.001);
-    // An 8.33kHz station within its tolerance keeps its channel
-    CHECK_NEAR(owningChannel(118109000.0, 118108333.3, STEP_833), 118108333.3, 0.001);
+    // The outer carriers of a 3 or 4 carrier system, LOWK tower on 118.1074, lie within a kHz
+    // of an 8.33kHz neighbour, further off than an 8.33kHz radio may be
+    CHECK_NEAR(owningChannel(118107400.0, 118108333.3, STEP_833), 118100000.0, 0.001);
+    CHECK_NEAR(owningChannel(118107500.0, 118108333.3, STEP_833), 118100000.0, 0.001);
+    CHECK_NEAR(owningChannel(118092500.0, 118091666.7, STEP_833), 118100000.0, 0.001);
+    // An 8.33kHz station within its tolerance (5ppm, 0.6kHz) keeps its channel
+    CHECK_NEAR(owningChannel(118108900.0, 118108333.3, STEP_833), 118108333.3, 0.001);
+    CHECK_NEAR(owningChannel(118107700.0, 118108333.3, STEP_833), 118108333.3, 0.001);
     // On the 25kHz grid the nearest channel is always right
     CHECK_NEAR(owningChannel(118105000.0, 118100000.0, STEP_25K), 118100000.0, 0.001);
     CHECK(carrierSearchHalfWidth(true, STEP_833) > 7500.0);
     CHECK_NEAR(carrierSearchHalfWidth(false, STEP_833), STEP_833 / 2.0, 0.001);
+}
+
+TEST(bookmarks_on_25k_channels_reach_their_offset_carriers) {
+    // Alone, a 25kHz channel reaches its outer offset carriers, an 8.33kHz one its own cell
+    CHECK(bookmarkHalfWidth(118100000.0, 0.0, 0.0, STEP_833) > 7500.0);
+    CHECK_NEAR(bookmarkHalfWidth(132766666.7, 0.0, 0.0, STEP_833), STEP_833 / 2.0, 0.001);
+    // Never over half the way to the next bookmark
+    CHECK_NEAR(bookmarkHalfWidth(118100000.0, 1e9, 10000.0, STEP_833), 5000.0, 0.001);
+    CHECK_NEAR(bookmarkHalfWidth(118100000.0, 6000.0, 1e9, STEP_833), 3000.0, 0.001);
 }
 
 TEST(data_channels_are_known_exactly) {
