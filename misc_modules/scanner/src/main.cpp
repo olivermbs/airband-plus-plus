@@ -474,8 +474,9 @@ private:
             lastClip = buf;
         }
         if (confirmedAfterListen) {
-            // It works, earlier false starts here were something else
+            // It works, earlier false starts and fragments here were something else
             falseStarts.erase(std::llround(receivingFreq));
+            fragments.erase(std::llround(receivingFreq));
             logActivity(now, clip);
         }
         if (recordMode == RECORD_OFF) { recorder.detach(); }
@@ -933,9 +934,13 @@ private:
         // nothing. Without a squelch the FFT decides.
         int squelch = radioSquelchState();
         bool present = (squelch == RADIO_IFACE_SQUELCH_NONE) ? (receivingSNR >= trigger - RECEIVE_HYSTERESIS) : (squelch == RADIO_IFACE_SQUELCH_OPEN);
+        // Until the radio noticed the retune its squelch still reports the frequency the
+        // scanner came from
+        if (now - receiveStart < std::chrono::milliseconds(LISTEN_SETTLE_MS)) { present = false; }
         if (present) {
             lastSignal = now;
             confirmedAfterListen = true;
+            presentFrames++;
             // Evidence of a reply elsewhere only counts while this channel is quiet
             replyHits.clear();
         }
@@ -967,6 +972,14 @@ private:
         framesSinceListen++;
         if (!confirmedAfterListen && now - receiveStart >= std::chrono::milliseconds(VERIFY_MS)) {
             falseStart(receivingChannel, now);
+            return;
+        }
+
+        // Only a fragment was heard, a click, a key-up or the last syllable of a transmission:
+        // it isn't logged or recorded, and there is no reply to wait the linger time for
+        if (confirmedAfterListen && !present && presentFrames < MIN_TRANSMISSION_FRAMES && now - lastSignal >= std::chrono::milliseconds(FRAGMENT_GAP_MS)) {
+            confirmedAfterListen = false;
+            fragment(receivingChannel, now);
             return;
         }
 
@@ -1177,6 +1190,21 @@ private:
         resumeSearching();
     }
 
+    // A fragment may be the end of a real transmission whose reply is coming, the channel stays
+    // in the scan. Only one that keeps giving fragments without ever a transmission is skipped.
+    void fragment(int channel, Clock::time_point now) {
+        long long key = std::llround(channels[channel]);
+        auto& times = fragments[key];
+        times.push_back(now);
+        while (!times.empty() && now - times.front() > std::chrono::minutes(FRAGMENT_MEMORY_MINUTES)) { times.erase(times.begin()); }
+        if ((int)times.size() >= FRAGMENTS_TO_SKIP) {
+            fragments.erase(key);
+            autoSkip(channel, "only fragments", now);
+            return;
+        }
+        resumeSearching();
+    }
+
     void autoSkip(int channel, const std::string& reason, Clock::time_point now) {
         long long key = std::llround(channels[channel]);
         flog::info("Scanner: skipping {0:.5f} MHz, {1}", channels[channel] / 1e6, reason);
@@ -1226,6 +1254,7 @@ private:
         lastSignal = now;
         hold = false;
         framesSinceListen = 0;
+        presentFrames = 0;
         confirmedAfterListen = false;
 
         trackedCenter = (std::fabs(center - receivingFreq) > CARRIER_FOLLOW_HZ) ? center : receivingFreq;
@@ -1433,7 +1462,15 @@ private:
     static constexpr int TICK_MS = 5;
     static constexpr int SEARCH_FRAMES = 3;
     // Time for the squelch to open after locking on, else it was a false start
-    static constexpr int VERIFY_MS = 250;
+    static constexpr int VERIFY_MS = 400;
+    // The radio retunes its squelch in its own frame handler, it may still report the previous
+    // frequency for a frame or two
+    static constexpr int LISTEN_SETTLE_MS = 150;
+    // Less sound than about 0.3s is a fragment, not a transmission, once it was quiet this long
+    static constexpr int MIN_TRANSMISSION_FRAMES = 18;
+    static constexpr int FRAGMENT_GAP_MS = 500;
+    static constexpr int FRAGMENTS_TO_SKIP = 3;
+    static constexpr int FRAGMENT_MEMORY_MINUTES = 2;
     static constexpr int SCAN_FFT_RATE = 60;
     static constexpr double DC_CLEARANCE_MARGIN = 2000.0;
     static constexpr int MIN_AVERAGED_FRAMES = 2;
@@ -1513,6 +1550,7 @@ private:
     };
     std::map<long long, AutoSkip> autoSkips;
     std::map<long long, Clock::time_point> falseStarts;
+    std::map<long long, std::vector<Clock::time_point>> fragments;
     struct Strikes {
         int count = 0;
         Clock::time_point last;
@@ -1592,6 +1630,8 @@ private:
     Clock::time_point lastVfoTune;
     int detectionFactor = 1;
     int framesSinceListen = 0;
+    // Frames the radio's squelch was open since locking on, at the scanner's 60 per second
+    int presentFrames = 0;
     bool confirmedAfterListen = false;
     float receivingSNR = 0.0f;
     double vfoFreq = 0.0;
