@@ -948,7 +948,9 @@ private:
         else {
             lastAbsent = now;
         }
-        if (receivingSNR >= trigger - RECEIVE_HYSTERESIS) {
+        // Only while a carrier is heard: the silence after an over counted as a carrier without
+        // modulation and skipped busy channels 4s after every short transmission
+        if (present) {
             modulation.add(fineSpectrum, receivingCarrier());
         }
         if (hold) { return; }
@@ -957,7 +959,7 @@ private:
         if (!present && watchForReply(now)) { return; }
 
         // A carrier with nothing beside it is a spur or a stuck transmitter, not a transmission
-        if (now - receiveStart >= std::chrono::milliseconds(UNMODULATED_CHECK_MS) && modulation.frameCount() >= MIN_MODULATION_FRAMES && modulation.sidebandToNoiseDb() < UNMODULATED_DB) {
+        if (present && now - receiveStart >= std::chrono::milliseconds(UNMODULATED_CHECK_MS) && modulation.frameCount() >= MIN_MODULATION_FRAMES && modulation.sidebandToNoiseDb() < UNMODULATED_DB) {
             autoSkip(receivingChannel, "unmodulated carrier", now);
             return;
         }
