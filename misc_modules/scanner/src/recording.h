@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <set>
@@ -72,6 +73,23 @@ namespace scan {
             path = base + "_" + std::to_string(i) + extension;
         }
         return path;
+    }
+
+    // The name a channel goes by on the radio: a 25kHz channel its frequency, an 8.33kHz one its
+    // ICAO channel name. Each 25kHz block X.X00 holds 8.33kHz channels named X.X05, X.X10 and
+    // X.X15 at 0, 8.33 and 16.67kHz; the one at 0 can't be told from the 25kHz channel and keeps
+    // its name. Anything else is the frequency to the kHz.
+    inline std::string channelName(double freq) {
+        const double BLOCK = 25000.0;
+        const double STEP_833 = 25000.0 / 3.0;
+        double base = std::floor(freq / BLOCK + 1e-9) * BLOCK;
+        double offset = freq - base;
+        long step = std::lround(offset / STEP_833);
+        double name = std::round(freq / 1000.0) * 1000.0;
+        if ((step == 1 || step == 2) && std::fabs(offset - (double)step * STEP_833) < 1.0) { name = base + (step == 1 ? 10000.0 : 15000.0); }
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.3f", name / 1e6);
+        return buf;
     }
 
     // A bookmark name made safe for a file name

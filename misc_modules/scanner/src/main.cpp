@@ -300,7 +300,7 @@ private:
         float menuWidth = ImGui::GetContentRegionAvail().x;
 
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextDisabled("Saves each transmission the scanner stops on as its own audio file, play them back under Activity.");
+        ImGui::TextDisabled("Saves each transmission the scanner stops on as its own audio file, in a folder per channel (118.100, 132.765), play them back under Activity.");
         ImGui::PopTextWrapPos();
 
         ImGui::LeftLabel("Record");
@@ -452,7 +452,8 @@ private:
         std::string label = bookmarkName(freq);
         if (!label.empty()) { fileName += "_" + scan::fileNamePart(label); }
 
-        std::string base = recordFolder.expandString(recordFolder.path) + "/" + fileName;
+        // A folder per channel, named as on the radio (118.100, 132.765)
+        std::string base = recordFolder.expandString(recordFolder.path) + "/" + scan::channelName(freq) + "/" + fileName;
         std::string path = scan::uniquePath(base, ".wav", [](const std::string& path) { return std::filesystem::exists(path); });
         recorder.start(path);
         // The channel itself, wherever the radio follows a carrier within it

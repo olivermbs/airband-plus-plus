@@ -48,6 +48,17 @@ TEST(clip_paths_never_replace_an_earlier_clip) {
     CHECK(uniquePath("/r/b", ".wav", exists) == "/r/b.wav");
 }
 
+TEST(channels_are_named_as_on_the_radio) {
+    // 25kHz channels by their frequency, 8.33kHz ones by their channel name
+    CHECK(channelName(118100000.0) == "118.100");
+    CHECK(channelName(121500000.0) == "121.500");
+    CHECK(channelName(132766666.7) == "132.765");
+    CHECK(channelName(130233333.3) == "130.235");
+    CHECK(channelName(118008333.3) == "118.010");
+    // Off the grid, the frequency rounded
+    CHECK(channelName(129474847.0) == "129.475");
+}
+
 TEST(bookmark_names_are_safe_in_file_names) {
     CHECK(fileNamePart("Tower") == "Tower");
     CHECK(fileNamePart("LOWK TWR/APP") == "LOWK-TWR-APP");
