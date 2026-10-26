@@ -58,6 +58,25 @@ TEST(peaks_never_go_above_the_ceiling) {
     CHECK(peak <= SpeechClarity::CEILING + 1e-6f);
 }
 
+TEST(peaks_over_the_ceiling_are_not_flattened) {
+    // A transmitter getting louder every cycle, as an overmodulated voice does: clamping each
+    // sample as it came cut a flat top into every new peak
+    SpeechClarity clarity;
+    clarity.setSamplerate(FS);
+    clarity.setLeveling(false);
+    std::vector<float> x((size_t)(0.3 * FS));
+    for (size_t i = 0; i < x.size(); i++) { x[i] = (float)((0.5 + 5.0 * i / FS) * std::sin(2.0 * M_PI * 1000.0 * i / FS)); }
+    std::vector<float> y = run(clarity, x);
+    int flatTops = 0;
+    int run = 0;
+    for (float v : y) {
+        run = (std::fabs(v) >= SpeechClarity::CEILING - 1e-4f) ? run + 1 : 0;
+        if (run == 2) { flatTops++; }
+    }
+    if (flatTops > 0) { std::printf("  %d flat tops\n", flatTops); }
+    CHECK(flatTops == 0);
+}
+
 TEST(silence_from_the_squelch_stays_silent) {
     SpeechClarity clarity;
     clarity.setSamplerate(FS);

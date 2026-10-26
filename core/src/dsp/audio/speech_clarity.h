@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace dsp::audio {
     // Makes radio voice easier to understand, after the squelch gate:
@@ -10,7 +11,9 @@ namespace dsp::audio {
     // - Leveler: with the carrier AGC loudness follows how hard each transmitter modulates, a
     //   weak aircraft and a loud tower come out several dB apart. The gain only adapts while
     //   there is sound, the squelch gate's silence would otherwise pull it up between overs.
-    // - Limiter: peaks would otherwise clip at the sound card.
+    // - Limiter: peaks would otherwise clip at the sound card. It looks 2ms ahead and turns the
+    //   gain down before a peak: clamping each sample as it came flattened the peaks of loud,
+    //   overmodulated transmitters like clipping.
     // Chosen by ear on airband recordings, with 50% noise reduction before it. Speech comes out
     // around -12dBFS, at least as loud as the radio without it, the limiter touching about 0.1%
     // of the samples.
@@ -36,6 +39,7 @@ namespace dsp::audio {
             envRelease = 1.0 - std::exp(-1.0 / (ENV_RELEASE_S * samplerate));
             gainSmoothing = 1.0 - std::exp(-1.0 / (GAIN_SMOOTHING_S * samplerate));
             limiterRelease = 1.0 - std::exp(-1.0 / (LIMITER_RELEASE_S * samplerate));
+            lookahead = std::max<int>(1, (int)std::lround(LOOKAHEAD_S * samplerate));
             reset();
         }
 
@@ -46,6 +50,12 @@ namespace dsp::audio {
             envelope = 0.0;
             gain = 1.0;
             limiterGain = 1.0;
+            delayed[0].assign(lookahead, 0.0f);
+            delayed[1].assign(lookahead, 0.0f);
+            wanted.assign(lookahead, 1.0);
+            smoothing.assign(lookahead, 1.0);
+            smoothingSum = lookahead;
+            cursor = 0;
         }
 
         void setLeveling(bool enabled) { leveling = enabled; }
@@ -67,16 +77,32 @@ namespace dsp::audio {
                 right *= gain;
             }
 
-            // Instant attack, a peak above the ceiling sets the gain that brings it down to it.
-            // Released before the check, the release must not push the sample over.
-            double peak = std::max<double>(std::fabs(left), std::fabs(right));
-            limiterGain += limiterRelease * (1.0 - limiterGain);
-            if (peak * limiterGain > CEILING) { limiterGain = CEILING / peak; }
-            l = (float)(left * limiterGain);
-            r = (float)(right * limiterGain);
+            limit(left, right, l, r);
         }
 
     private:
+        // The gain a peak needs is held for the lookahead and then released, and the held gain is
+        // averaged over the lookahead: it ramps down over the samples before the peak and is
+        // never above what the peak needs when it comes out of the delay
+        inline void limit(double left, double right, float& l, float& r) {
+            double peak = std::max<double>(std::fabs(left), std::fabs(right));
+            wanted[cursor] = (peak > CEILING) ? CEILING / peak : 1.0;
+            double held = *std::min_element(wanted.begin(), wanted.end());
+            if (held < limiterGain) { limiterGain = held; }
+            else { limiterGain += limiterRelease * (held - limiterGain); }
+            smoothingSum += limiterGain - smoothing[cursor];
+            smoothing[cursor] = limiterGain;
+            double gain = std::min<double>(1.0, smoothingSum / lookahead);
+
+            // The oldest sample in the delay comes out, this one goes in
+            int out = (cursor + 1) % lookahead;
+            l = std::clamp<float>((float)(delayed[0][out] * gain), -CEILING, CEILING);
+            r = std::clamp<float>((float)(delayed[1][out] * gain), -CEILING, CEILING);
+            delayed[0][cursor] = (float)left;
+            delayed[1][cursor] = (float)right;
+            cursor = out;
+        }
+
         struct Biquad {
             double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
             double z1[2] = {}, z2[2] = {};
@@ -138,6 +164,7 @@ namespace dsp::audio {
         static constexpr double ENV_RELEASE_S = 0.400;
         static constexpr double GAIN_SMOOTHING_S = 0.050;
         static constexpr double LIMITER_RELEASE_S = 0.060;
+        static constexpr double LOOKAHEAD_S = 0.002;
 
         Biquad presence;
         Biquad lowpass[2];
@@ -149,5 +176,11 @@ namespace dsp::audio {
         double envelope = 0.0;
         double gain = 1.0;
         double limiterGain = 1.0;
+        int lookahead = 1;
+        std::vector<float> delayed[2];
+        std::vector<double> wanted;
+        std::vector<double> smoothing;
+        double smoothingSum = 1.0;
+        int cursor = 0;
     };
 }
