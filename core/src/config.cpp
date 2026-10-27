@@ -51,6 +51,13 @@ void ConfigManager::save(bool lock) {
     file << conf.dump(4, ' ', false, json::error_handler_t::replace);
     file.close();
     std::error_code err;
+    // A full disk leaves a truncated file, it would replace the config and be reset on loading
+    if (file.fail()) {
+        flog::error("Could not save config file '{}': writing '{}' failed", path, tmpPath);
+        std::filesystem::remove(tmpPath, err);
+        if (lock) { mtx.unlock(); }
+        return;
+    }
     std::filesystem::rename(tmpPath, path, err);
     if (err) { flog::error("Could not save config file '{}': {}", path, err.message()); }
     if (lock) { mtx.unlock(); }
