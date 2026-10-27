@@ -460,10 +460,11 @@ private:
         if (iqRecorder.isEnabled()) { iqRecorder.start(path.substr(0, path.size() - 4) + "_iq.wav", freq - gui::waterfall.getCenterFrequency()); }
     }
 
-    // Ends what was received on the channel: logged and its recording kept only if it was heard
+    // Ends what was received on the channel: logged and its recording kept only if it was heard.
+    // Only once: the user tuning away or stopping the scanner finishes it before the scanner does.
     void endReceive(Clock::time_point now) {
-        // Already finished when the user tuned away
-        if (tunedAway) { return; }
+        if (receiveFinished) { return; }
+        receiveFinished = true;
         std::string clip = recorder.finish(confirmedAfterListen);
         iqRecorder.finish(!clip.empty());
         if (!clip.empty()) {
@@ -945,7 +946,6 @@ private:
         double actualFreq = gui::waterfall.getCenterFrequency() + gui::waterfall.vfos[vfoName]->centerOffset;
         if (std::fabs(actualFreq - vfoFreq) > 1.0) {
             endReceive(now);
-            tunedAway = true;
             hold = true;
             vfoFreq = actualFreq;
         }
@@ -1282,7 +1282,7 @@ private:
         // carriers and the aircraft on the channel itself are looked for within the offset reach
         bool offsetCarrier = std::fabs(center - receivingFreq) > cellHalfWidth(channel);
         receiveHalfWidth = std::max(cellHalfWidth(channel), scan::carrierSearchHalfWidth(offsetCarrier, step));
-        tunedAway = false;
+        receiveFinished = false;
         receivingSNR = snr;
         receiveStart = now;
         lastSignal = now;
@@ -1662,7 +1662,7 @@ private:
     // carrier is looked for: wider for a 25kHz channel heard on an offset carrier
     double receivingFreq = 0.0;
     double receiveHalfWidth = 0.0;
-    bool tunedAway = false;
+    bool receiveFinished = false;
     Clock::time_point lastVfoTune;
     int detectionFactor = 1;
     // How long the radio's squelch was open since locking on
