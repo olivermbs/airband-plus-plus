@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,9 +13,12 @@ namespace scan {
         double stop;
         double step;
 
+        // Saturates instead of overflowing, a range from a hand edited config can be anything
         int count() const {
-            if (step <= 0.0 || stop < start) { return 0; }
-            return (int)std::floor((stop - start) / step + 1e-6) + 1;
+            if (!(step > 0.0) || !(stop >= start)) { return 0; }
+            double n = std::floor((stop - start) / step + 1e-6) + 1.0;
+            if (!std::isfinite(n) || n > (double)std::numeric_limits<int>::max()) { return std::numeric_limits<int>::max(); }
+            return (int)n;
         }
 
         double freq(int i) const { return start + (double)i * step; }

@@ -706,6 +706,16 @@ private:
             error = "Start the SDR first";
             return;
         }
+        // A step wider than the detection can average over leaves it no spectrum, and a wide
+        // range at a fine step is millions of channels
+        if (step > MAX_STEP) {
+            error = "Step too wide, at most 100 kHz";
+            return;
+        }
+        if (mode == MODE_RANGE && (stopFreq < startFreq || scan::ChannelGrid{ startFreq, stopFreq, step }.count() > MAX_CHANNELS)) {
+            error = "Range too wide for the step";
+            return;
+        }
 
         // Excluded channels are left out of the plan, so no time is spent on them
         std::vector<double> all = (mode == MODE_RANGE) ? scan::gridChannels({ startFreq, stopFreq, step }) : bookmarkChannels();
@@ -1494,6 +1504,8 @@ private:
 
     static constexpr double AIRBAND_25K = 25000.0;
     static constexpr double AIRBAND_833 = 25000.0 / 3.0;
+    static constexpr double MAX_STEP = 100000.0;
+    static constexpr int MAX_CHANNELS = 100000;
 
     static constexpr int MODE_RANGE = 0;
     static constexpr int MODE_BOOKMARKS = 1;

@@ -1,5 +1,6 @@
 #include <channel_scan.h>
 #include "check.h"
+#include <limits>
 #include <random>
 
 using namespace scan;
@@ -408,6 +409,13 @@ TEST(modulation_meter_no_verdict_from_bins_too_coarse_for_voice) {
     // Fine enough bins still tell a bare carrier from voice
     CHECK(averagedModulation(-100.0f, 17, 32768, 1200.0) < 0.3f);
     CHECK(averagedModulation(3.0f, 18, 32768, 1200.0) > 0.3f);
+}
+
+TEST(grid_count_never_overflows) {
+    // Ranges from a hand edited config: too many channels to count in an int, or no number at all
+    CHECK((ChannelGrid{ 0.0, 1e18, 1.0 }.count()) == std::numeric_limits<int>::max());
+    CHECK((ChannelGrid{ NAN, 1e6, 1.0 }.count()) == 0);
+    CHECK((ChannelGrid{ 118e6, 118.1e6, 25e3 }.count()) == 5);
 }
 
 int main() { return runTests(); }
