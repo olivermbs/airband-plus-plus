@@ -361,8 +361,8 @@ TEST(nearest_channel_in_list) {
     CHECK(nearestChannel(channels, 130e6) == 2);
 }
 
-// One frame of noise around a carrier, optionally with voice-like energy beside it
-static std::vector<float> carrierFrame(std::mt19937& rng, const Spectrum& layout, double carrier, float carrierSNR, float sidebandSNR) {
+// One frame of noise around a carrier, optionally with voice-like energy beside it up to voiceEnd
+static std::vector<float> carrierFrame(std::mt19937& rng, const Spectrum& layout, double carrier, float carrierSNR, float sidebandSNR, double voiceEnd) {
     std::exponential_distribution<float> power(1.0f);
     std::vector<float> bins(layout.width);
     for (int i = 0; i < layout.width; i++) {
@@ -370,22 +370,21 @@ static std::vector<float> carrierFrame(std::mt19937& rng, const Spectrum& layout
         float p = power(rng);
         double off = std::fabs(f - carrier);
         if (off < layout.binWidth() / 2.0) { p += std::pow(10.0f, carrierSNR / 10.0f); }
-        else if (off > 300.0 && off < 3000.0) { p += std::pow(10.0f, sidebandSNR / 10.0f) * power(rng); }
+        else if (off > 300.0 && off < voiceEnd) { p += std::pow(10.0f, sidebandSNR / 10.0f) * power(rng); }
         bins[i] = 10.0f * std::log10(p);
     }
     return bins;
 }
 
-static float averagedModulation(float sidebandSNR, unsigned seed) {
+static float averagedModulation(float sidebandSNR, unsigned seed, int size = 8192, double voiceEnd = 3000.0) {
     std::mt19937 rng(seed);
     double center = 132.0e6, rate = 2.56e6;
-    int size = 8192;
     double rawBin = rate / size;
     Spectrum layout = { nullptr, size, center - rate / 2.0 - rawBin / 2.0, rate, center };
     double carrier = 132.6e6 + rawBin * 0.5;
     ModulationMeter meter;
     for (int frame = 0; frame < 120; frame++) {
-        std::vector<float> bins = carrierFrame(rng, layout, carrier, 15.0f, sidebandSNR);
+        std::vector<float> bins = carrierFrame(rng, layout, carrier, 15.0f, sidebandSNR, voiceEnd);
         Spectrum s = layout;
         s.data = bins.data();
         meter.add(s, carrier);
@@ -395,10 +394,20 @@ static float averagedModulation(float sidebandSNR, unsigned seed) {
 
 TEST(modulation_meter_tells_carriers_from_voice) {
     // A bare carrier (spur, birdie): nothing beside it
-    CHECK(averagedModulation(-100.0f, 13) < 0.3f);
+    CHECK(averagedModulation(-100.0f, 13, 32768) < 0.3f);
     // Weak voice: sideband energy 6dB under the noise per bin is still clearly there on average
-    CHECK(averagedModulation(-6.0f, 14) > 0.5f);
-    CHECK(averagedModulation(3.0f, 15) > 3.0f);
+    CHECK(averagedModulation(-6.0f, 14, 32768) > 0.5f);
+    CHECK(averagedModulation(3.0f, 15, 32768) > 3.0f);
+}
+
+TEST(modulation_meter_no_verdict_from_bins_too_coarse_for_voice) {
+    // Klagenfurt Tower: clear voice, but its energy is below 1.2kHz. At 312Hz bins the bins beside
+    // the carrier are left out up to 1.56kHz, all the meter sees is noise and the channel was
+    // skipped as an unmodulated carrier 4s into every reception.
+    CHECK(averagedModulation(3.0f, 16, 8192, 1200.0) > 0.3f);
+    // Fine enough bins still tell a bare carrier from voice
+    CHECK(averagedModulation(-100.0f, 17, 32768, 1200.0) < 0.3f);
+    CHECK(averagedModulation(3.0f, 18, 32768, 1200.0) > 0.3f);
 }
 
 int main() { return runTests(); }

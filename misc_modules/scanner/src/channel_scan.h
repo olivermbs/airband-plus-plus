@@ -255,6 +255,9 @@ namespace scan {
         void add(const Spectrum& s, double carrier) {
             // The FFT window spreads a carrier over a few bins, those must not count as modulation
             double sidebandStart = std::max<double>(MIN_SIDEBAND_OFFSET, CARRIER_BINS * s.binWidth());
+            // Most of the energy of voice is below about 1.2kHz, bins that coarse leave out all of
+            // it and a clear transmission looks like a bare carrier
+            if (sidebandStart > MAX_SIDEBAND_START) { return; }
 
             double sidebandSum = 0.0;
             int sidebandCount = 0;
@@ -295,6 +298,7 @@ namespace scan {
         static constexpr float DB_TO_LN = 0.230258509f;
         static constexpr double LN2 = 0.693147181;
         static constexpr double MIN_SIDEBAND_OFFSET = 400.0;
+        static constexpr double MAX_SIDEBAND_START = 800.0;
         static constexpr double CARRIER_BINS = 5.0;
         static constexpr double SIDEBAND_END = 3000.0;
         static constexpr double NOISE_START = 10000.0;
