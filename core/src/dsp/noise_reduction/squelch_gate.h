@@ -1,5 +1,6 @@
 #pragma once
 #include "../processor.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 
@@ -29,7 +30,8 @@ namespace dsp::noise_reduction {
         inline int process(int count, const stereo_t* in, stereo_t* out) {
             bool open = _open->load();
             for (int i = 0; i < count; i++) {
-                openFor = open ? openFor + 1 : 0;
+                // Only whether it was open longer than the delay matters, it stays open for hours
+                openFor = open ? std::min<int>(openFor + 1, openDelay + 1) : 0;
                 float target = (openFor > openDelay) ? 1.0f : 0.0f;
                 if (position < target) { position = std::min<float>(target, position + openStep); }
                 else if (position > target) { position = std::max<float>(target, position - closeStep); }
