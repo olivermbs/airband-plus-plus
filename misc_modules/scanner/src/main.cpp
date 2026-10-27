@@ -781,8 +781,16 @@ private:
             return;
         }
 
-        if (state == State::Tuning && now - stateSince < std::chrono::milliseconds(tuningTime)) { return; }
         if (state == State::Tuning) {
+            if (!hardwareTuned()) {
+                // The retune never reached the SDR or got lost on the way, it is requested again
+                if (now - stateSince >= std::chrono::milliseconds(TUNE_TIMEOUT_MS)) {
+                    failedRetunes++;
+                    tuneWindow();
+                }
+                return;
+            }
+            if (now - stateSince < std::chrono::milliseconds(tuningTime)) { return; }
             if (!newFrameAvailable()) { return; }
             enterSearching();
         }
@@ -794,6 +802,20 @@ private:
         }
 
         search(now);
+    }
+
+    // Whether the SDR took the retune to this window. The frames after it are counted from then:
+    // the SDR tunes on its own thread, a retried tune takes longer than the tuning time.
+    bool hardwareTuned() {
+        if (tuneTaken) { return true; }
+        uint64_t requests = sigpath::sourceManager.getTuneRequests();
+        if (requests == tuneRequestsAtTune || sigpath::sourceManager.getTunesDone() < requests) { return false; }
+
+        int size;
+        if (!gui::waterfall.acquireRawFFT(size, tuneFrame)) { return false; }
+        gui::waterfall.releaseRawFFT();
+        tuneTaken = true;
+        return true;
     }
 
     // Copies the newest FFT frame. Frames that were already used, and frames that may still
@@ -1369,12 +1391,9 @@ private:
         gui::waterfall.setCenterFrequency(window.center);
         gui::waterfall.centerFreqMoved = true;
         tuneFailuresAtTune = sigpath::sourceManager.getTuneFailures();
+        tuneRequestsAtTune = sigpath::sourceManager.getTuneRequests();
+        tuneTaken = false;
         tuneVFO(channels[window.first]);
-
-        int size;
-        if (gui::waterfall.acquireRawFFT(size, tuneFrame)) {
-            gui::waterfall.releaseRawFFT();
-        }
 
         state = State::Tuning;
         stateSince = Clock::now();
@@ -1478,6 +1497,8 @@ private:
     static constexpr double DC_CLEARANCE_MARGIN = 2000.0;
     static constexpr int MIN_AVERAGED_FRAMES = 2;
     static constexpr uint64_t FRAMES_AFTER_TUNE = 3;
+    // A retune the SDR hasn't taken after this long is requested again
+    static constexpr int TUNE_TIMEOUT_MS = 1000;
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
     static constexpr float RECEIVE_SMOOTHING = 0.2f;
@@ -1607,6 +1628,9 @@ private:
     Clock::time_point sweepStart;
     double lastSweepSeconds = 0.0;
     uint64_t tuneFailuresAtTune = 0;
+    uint64_t tuneRequestsAtTune = 0;
+    // The SDR took the retune to the current window, tuneFrame is the FFT frame it did at
+    bool tuneTaken = false;
     int failedRetunes = 0;
     std::vector<scan::Window> windows;
     double plannedBandwidth = 0.0;

@@ -80,6 +80,7 @@ public:
         handler.startHandler = start;
         handler.stopHandler = stop;
         handler.tuneHandler = tune;
+        handler.asyncTuning = true;
         handler.stream = &stream;
 
         strcpy(dbTxt, "--");
@@ -407,13 +408,19 @@ private:
     static void tune(double freq, void* ctx) {
         RTLSDRSourceModule* _this = (RTLSDRSourceModule*)ctx;
         _this->freq = freq;
+        uint64_t request = sigpath::sourceManager.getTuneRequests();
         if (_this->running) {
             {
                 std::lock_guard<std::mutex> lck(_this->tuneMtx);
                 _this->pendingFreq = freq;
+                _this->pendingRequest = request;
                 _this->tunePending = true;
             }
             _this->tuneCnd.notify_one();
+        }
+        else {
+            // The frequency is set when it starts
+            sigpath::sourceManager.reportTuned(request);
         }
         flog::info("RTLSDRSourceModule '{0}': Tune: {1}!", _this->name, freq);
     }
@@ -421,11 +428,13 @@ private:
     void tunerWorker() {
         while (true) {
             double target;
+            uint64_t request;
             {
                 std::unique_lock<std::mutex> lck(tuneMtx);
                 tuneCnd.wait(lck, [this]() { return tunePending || !tunerRunning; });
                 if (!tunerRunning) { return; }
                 target = pendingFreq;
+                request = pendingRequest;
                 tunePending = false;
             }
 
@@ -440,6 +449,7 @@ private:
 
             if (tuned) {
                 failedTunes = 0;
+                sigpath::sourceManager.reportTuned(request);
                 continue;
             }
 
@@ -920,6 +930,7 @@ private:
     std::mutex tuneMtx;
     std::condition_variable tuneCnd;
     double pendingFreq = 0.0;
+    uint64_t pendingRequest = 0;
     bool tunePending = false;
     bool tunerRunning = false;
     bool waitingForDevice = false;

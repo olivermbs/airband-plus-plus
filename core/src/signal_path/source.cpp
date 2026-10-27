@@ -84,8 +84,10 @@ void SourceManager::tune(double freq) {
     if (selectedHandler == NULL) {
         return;
     }
+    uint64_t request = ++tuneRequests;
     // TODO: No need to always retune the hardware in Panadapter mode
     selectedHandler->tuneHandler(abs(((tuneMode == TuningMode::NORMAL) ? (freq + tuneOffset) : ifFreq)), selectedHandler->ctx);
+    if (!selectedHandler->asyncTuning) { reportTuned(request); }
     onRetune.emit(freq + tuneOffset);
     currentFreq = freq;
 }

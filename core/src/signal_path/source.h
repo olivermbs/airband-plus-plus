@@ -20,6 +20,8 @@ public:
         void (*stopHandler)(void* ctx);
         void (*tuneHandler)(double freq, void* ctx);
         void* ctx;
+        // The hardware takes a retune on its own thread and reports it with reportTuned()
+        bool asyncTuning = false;
     };
 
     enum TuningMode {
@@ -45,6 +47,15 @@ public:
     void reportTuneFailed() { tuneFailures++; }
     uint64_t getTuneFailures() { return tuneFailures; }
 
+    // Every retune is numbered. The spectrum shows the newest frequency only once the hardware
+    // took the newest request, getTunesDone() == getTuneRequests().
+    uint64_t getTuneRequests() { return tuneRequests; }
+    uint64_t getTunesDone() { return tunesDone; }
+    void reportTuned(uint64_t request) {
+        uint64_t done = tunesDone;
+        while (done < request && !tunesDone.compare_exchange_weak(done, request)) {}
+    }
+
     Event<std::string> onSourceRegistered;
     Event<std::string> onSourceUnregister;
     Event<std::string> onSourceUnregistered;
@@ -59,5 +70,7 @@ private:
     double ifFreq = 0.0;
     TuningMode tuneMode = TuningMode::NORMAL;
     std::atomic<uint64_t> tuneFailures = 0;
+    std::atomic<uint64_t> tuneRequests = 0;
+    std::atomic<uint64_t> tunesDone = 0;
     dsp::stream<dsp::complex_t> nullSource;
 };
