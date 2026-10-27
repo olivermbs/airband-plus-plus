@@ -700,7 +700,7 @@ private:
         all.erase(std::unique(all.begin(), all.end(), [](double a, double b) { return std::fabs(a - b) < 1.0; }), all.end());
         channels.clear();
         for (double freq : all) {
-            if (!lockouts.count(std::llround(freq)) && !(skipDataChannels && scan::isDataChannel(freq))) { channels.push_back(freq); }
+            if (!isExcluded(freq)) { channels.push_back(freq); }
         }
         // A grid's channels each cover half the step around them. Bookmarks have no neighbours
         // in the list but the next bookmark, one on a 25kHz channel covers its offset carriers.
@@ -900,7 +900,7 @@ private:
             // is excluded or skipped
             double center = carrierCenter(window.first + picked);
             int channel = owningChannel(center, window);
-            if (isSkipped(channels[channel], now)) {
+            if (channel < 0 || isSkipped(channels[channel], now)) {
                 snr[picked] = -INFINITY;
                 continue;
             }
@@ -910,13 +910,20 @@ private:
     }
 
     // The channel a carrier belongs to: the nearest one, or on the 8.33kHz grid the 25kHz
-    // channel it is an offset carrier of
+    // channel it is an offset carrier of. -1 when that channel is excluded: it is found on the
+    // whole grid, the nearest channel left in the scan would be a neighbour.
     int owningChannel(double carrier, const scan::Window& window) {
         int nearest = std::clamp<int>(scan::nearestChannel(channels, carrier), window.first, window.last);
         if (mode != MODE_RANGE) { return nearest; }
-        double owner = scan::owningChannel(carrier, channels[nearest], step);
+        double onGrid = startFreq + std::round((carrier - startFreq) / step) * step;
+        double owner = scan::owningChannel(carrier, onGrid, step);
+        if (isExcluded(owner)) { return -1; }
         int channel = scan::nearestChannel(channels, owner);
         return (std::fabs(channels[channel] - owner) < 1.0) ? channel : nearest;
+    }
+
+    bool isExcluded(double freq) {
+        return lockouts.count(std::llround(freq)) || (skipDataChannels && scan::isDataChannel(freq));
     }
 
     // Whether the radio's squelch would open for a channel: its test is the power of the whole
@@ -1244,8 +1251,7 @@ private:
 
     bool isSkipped(double freq, Clock::time_point now) {
         long long key = std::llround(freq);
-        if (lockouts.count(key)) { return true; }
-        if (skipDataChannels && scan::isDataChannel(freq)) { return true; }
+        if (isExcluded(freq)) { return true; }
 
         auto autoIt = autoSkips.find(key);
         if (autoIt != autoSkips.end()) {
