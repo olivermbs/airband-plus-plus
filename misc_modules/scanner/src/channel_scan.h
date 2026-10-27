@@ -252,12 +252,14 @@ namespace scan {
             frames = 0;
         }
 
+        // The FFT window spreads a carrier over a few bins, those must not count as modulation.
+        // Most of the energy of voice is below about 1.2kHz, bins so coarse that they leave out
+        // all of it make a clear transmission look like a bare carrier: no verdict then.
+        static bool canJudge(double binWidth) { return sidebandStart(binWidth) <= MAX_SIDEBAND_START; }
+
         void add(const Spectrum& s, double carrier) {
-            // The FFT window spreads a carrier over a few bins, those must not count as modulation
-            double sidebandStart = std::max<double>(MIN_SIDEBAND_OFFSET, CARRIER_BINS * s.binWidth());
-            // Most of the energy of voice is below about 1.2kHz, bins that coarse leave out all of
-            // it and a clear transmission looks like a bare carrier
-            if (sidebandStart > MAX_SIDEBAND_START) { return; }
+            if (!canJudge(s.binWidth())) { return; }
+            double start = sidebandStart(s.binWidth());
 
             double sidebandSum = 0.0;
             int sidebandCount = 0;
@@ -267,7 +269,7 @@ namespace scan {
             for (int i = low; i <= high; i++) {
                 double offset = std::fabs(s.start + ((double)i + 0.5) * s.binWidth() - carrier);
                 float power = std::exp(s.data[i] * DB_TO_LN);
-                if (offset >= sidebandStart && offset <= SIDEBAND_END) {
+                if (offset >= start && offset <= SIDEBAND_END) {
                     sidebandSum += power;
                     sidebandCount++;
                 }
@@ -295,6 +297,8 @@ namespace scan {
         }
 
     private:
+        static double sidebandStart(double binWidth) { return std::max<double>(MIN_SIDEBAND_OFFSET, CARRIER_BINS * binWidth); }
+
         static constexpr float DB_TO_LN = 0.230258509f;
         static constexpr double LN2 = 0.693147181;
         static constexpr double MIN_SIDEBAND_OFFSET = 400.0;

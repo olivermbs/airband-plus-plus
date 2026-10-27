@@ -542,7 +542,20 @@ private:
         if (rawBinWidth > step / 4.0) {
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "FFT too coarse (%.1f kHz/bin)", rawBinWidth / 1e3);
             ImGui::TextWrapped("Increase the FFT size in the display settings.");
+            return;
         }
+        if (rawBinWidth > 0.0 && !scan::ModulationMeter::canJudge(rawBinWidth)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("A dead carrier is skipped after 30s, with an FFT size of %d or more within 4s", modulationFFTSize());
+            ImGui::PopTextWrapPos();
+        }
+    }
+
+    // The smallest FFT size, a power of two, at which the modulation of a carrier can be judged
+    int modulationFFTSize() {
+        int size = 1024;
+        while (size < MAX_FFT_SIZE && !scan::ModulationMeter::canJudge(plannedBandwidth / size)) { size *= 2; }
+        return size;
     }
 
     void drawAutoSkips() {
@@ -1510,6 +1523,7 @@ private:
     static constexpr uint64_t FRAMES_AFTER_TUNE = 3;
     // A retune the SDR hasn't taken after this long is requested again
     static constexpr int TUNE_TIMEOUT_MS = 1000;
+    static constexpr int MAX_FFT_SIZE = 1 << 20;
     static constexpr int SKIP_TIME_S = 30;
     static constexpr float RECEIVE_HYSTERESIS = 3.0f;
     static constexpr float RECEIVE_SMOOTHING = 0.2f;
