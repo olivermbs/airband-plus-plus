@@ -401,14 +401,15 @@ private:
     }
 
     void updateRecorder() {
+        // Switched off during a transmission: its clip and raw signal are finished with it, not
+        // thrown away. Its end applies the settings.
+        if (running && state == State::Receiving && recorder.isRecording()) { return; }
         if (running && recordMode != RECORD_OFF && saveIq) { iqRecorder.enable(); }
         else { iqRecorder.disable(); }
         if (running && recordMode != RECORD_OFF) {
             recorder.attach(vfoName);
             return;
         }
-        // Switched off during a transmission: its clip is finished with it, not thrown away
-        if (running && state == State::Receiving && recorder.isRecording()) { return; }
         recorder.detach();
     }
 
@@ -481,7 +482,7 @@ private:
             fragments.erase(std::llround(receivingFreq));
             logActivity(now, clip);
         }
-        if (recordMode == RECORD_OFF) { recorder.detach(); }
+        updateRecorder();
     }
 
     void logActivity(Clock::time_point now, const std::string& clip) {
