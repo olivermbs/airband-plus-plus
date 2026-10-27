@@ -763,8 +763,7 @@ private:
         ImGui::PlotLines(CONCAT("##_rtlsdr_gain_plot_", name), floors.data(), (int)floors.size(), 0, "noise floor by gain", FLT_MAX, FLT_MAX, ImVec2(width, 60.0f * style::uiScale));
         if (previousGainId >= 0 && previousGainId != gainId) {
             if (ImGui::Button(CONCAT("Undo##_rtlsdr_gain_undo_", name), ImVec2(width, 0))) {
-                applyGain(previousGainId);
-                sweepMessage = "Back to " + gainText(gainId);
+                sweepMessage = applyGain(previousGainId) ? "Back to " + gainText(gainId) : "The dongle didn't take " + gainText(previousGainId);
                 previousGainId = -1;
             }
         }
@@ -865,7 +864,10 @@ private:
         gain::Choice choice = gain::choose(sweepSteps);
         sweepResult = sweepSteps;
         int chosen = (int)(std::find(gainList.begin(), gainList.end(), sweepSteps[choice.step].gain) - gainList.begin());
-        applyGain(chosen);
+        if (!applyGain(chosen)) {
+            endSweep("Stopped, the dongle didn't take the best gain " + gainText(chosen), true);
+            return;
+        }
         endSweep("Best gain " + gainText(gainId) + " (was " + gainText(previousGainId) + "). " + choice.reason + ".", false);
     }
 
@@ -882,14 +884,17 @@ private:
         return false;
     }
 
-    void applyGain(int id) {
-        gainId = std::clamp<int>(id, 0, (int)gainList.size() - 1);
+    // Shown and saved only once the dongle took it, a stopped one gets it when it starts
+    bool applyGain(int id) {
+        int clamped = std::clamp<int>(id, 0, (int)gainList.size() - 1);
+        if (running && !setTunerGain(gainList[clamped])) { return false; }
+        gainId = clamped;
         updateGainTxt();
-        setTunerGain(gainList[gainId]);
-        if (selectedDevName.empty()) { return; }
+        if (selectedDevName.empty()) { return true; }
         config.acquire();
         config.conf["devices"][selectedDevName]["gain"] = gainId;
         config.release(true);
+        return true;
     }
 
     std::string gainText(int id) {
