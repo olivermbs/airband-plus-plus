@@ -751,6 +751,7 @@ private:
     static void frameEventHandler(bool playing, void* ctx) {
         ScannerModule* _this = (ScannerModule*)ctx;
         _this->player.poll();
+        _this->recorder.checkSampleRate();
         if (!_this->running) { return; }
 
         auto now = Clock::now();

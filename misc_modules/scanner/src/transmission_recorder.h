@@ -75,8 +75,18 @@ public:
         }
         clipPath = path;
         clipRate = sampleRate;
+        clipEnded = false;
         trimmer.reset((int)(MAX_PAUSE_SECONDS * sampleRate));
         return true;
+    }
+
+    // From the UI thread, where the sample rate of the audio changes with the output device. A
+    // WAV file has one sample rate: the clip ends there, the rest of the transmission is left out.
+    void checkSampleRate() {
+        if (!input) { return; }
+        float rate = sigpath::sinkManager.getStreamSampleRate(attachedName);
+        std::lock_guard<std::mutex> lck(mtx);
+        if (!clipPath.empty() && rate != clipRate) { clipEnded = true; }
     }
 
     // Closes the clip. It is kept when asked to and it holds enough sound, else the file is
@@ -100,7 +110,7 @@ private:
     static void handler(dsp::stereo_t* data, int count, void* ctx) {
         TransmissionRecorder* _this = (TransmissionRecorder*)ctx;
         std::lock_guard<std::mutex> lck(_this->mtx);
-        if (_this->clipPath.empty()) { return; }
+        if (_this->clipPath.empty() || _this->clipEnded) { return; }
 
         float* mono = _this->monoBuf.data();
         for (int i = 0; i < count; i++) {
@@ -128,6 +138,7 @@ private:
     wav::Writer writer;
     std::string clipPath;
     float clipRate = 48000.0f;
+    bool clipEnded = false;
     scan::SilenceTrimmer trimmer;
     std::vector<float> monoBuf = std::vector<float>(STREAM_BUFFER_SIZE);
 };
