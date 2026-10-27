@@ -1005,7 +1005,6 @@ private:
 
         // Nothing in the frames after locking on: it was a noise spike or a stale frame from before
         // the retune, don't wait for the linger time
-        framesSinceListen++;
         if (!confirmedAfterListen && now - receiveStart >= std::chrono::milliseconds(VERIFY_MS)) {
             falseStart(receivingChannel, now);
             return;
@@ -1288,7 +1287,6 @@ private:
         receiveStart = now;
         lastSignal = now;
         hold = false;
-        framesSinceListen = 0;
         audibleTime = Clock::duration::zero();
         wasPresent = false;
         confirmedAfterListen = false;
@@ -1667,7 +1665,6 @@ private:
     bool tunedAway = false;
     Clock::time_point lastVfoTune;
     int detectionFactor = 1;
-    int framesSinceListen = 0;
     // How long the radio's squelch was open since locking on
     Clock::duration audibleTime = Clock::duration::zero();
     bool wasPresent = false;
