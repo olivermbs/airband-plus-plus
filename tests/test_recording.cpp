@@ -86,7 +86,7 @@ static void putTag(std::vector<uint8_t>& out, const char* tag) {
     out.insert(out.end(), tag, tag + 4);
 }
 
-static std::vector<uint8_t> wavFile(uint16_t channels, uint16_t bits, const std::vector<int16_t>& samples, uint32_t dataSize) {
+static std::vector<uint8_t> wavFile(uint16_t channels, uint16_t bits, const std::vector<int16_t>& samples, uint32_t dataSize, uint32_t sampleRate = 48000) {
     std::vector<uint8_t> out;
     putTag(out, "RIFF");
     put32(out, 0);
@@ -98,8 +98,8 @@ static std::vector<uint8_t> wavFile(uint16_t channels, uint16_t bits, const std:
     put32(out, 16);
     put16(out, 1);
     put16(out, channels);
-    put32(out, 48000);
-    put32(out, 48000 * channels * bits / 8);
+    put32(out, sampleRate);
+    put32(out, sampleRate * channels * bits / 8);
     put16(out, channels * bits / 8);
     put16(out, bits);
     putTag(out, "data");
@@ -135,6 +135,15 @@ TEST(wav_rejects_other_formats) {
     Clip clip;
     CHECK(!parseWav(wavFile(1, 8, { 1, 2 }, 4), clip));
     CHECK(!parseWav({ 'n', 'o', 'p', 'e' }, clip));
+}
+
+TEST(wav_rejects_sample_rates_no_audio_has) {
+    // A damaged header: playback sizes its blocks by the rate and would overrun its buffer
+    Clip clip;
+    CHECK(!parseWav(wavFile(1, 16, { 1, 2 }, 4, 4000000000u), clip));
+    CHECK(!parseWav(wavFile(1, 16, { 1, 2 }, 4, 100), clip));
+    CHECK(parseWav(wavFile(1, 16, { 1, 2 }, 4, 8000), clip));
+    CHECK(parseWav(wavFile(1, 16, { 1, 2 }, 4, 192000), clip));
 }
 
 int main() { return runTests(); }

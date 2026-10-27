@@ -108,8 +108,12 @@ namespace scan {
     };
 
     // Reads 16 bit PCM, which is what the scanner records, stereo is mixed down to mono. A file
-    // that wasn't closed properly has no data size, the rest of the file is taken then.
+    // that wasn't closed properly has no data size, the rest of the file is taken then. A sample
+    // rate no audio has means a damaged header, playback sizes its blocks by it.
     inline bool parseWav(const std::vector<uint8_t>& data, Clip& clip) {
+        const uint32_t MIN_SAMPLE_RATE = 1000;
+        const uint32_t MAX_SAMPLE_RATE = 768000;
+
         auto u16 = [&](size_t at) { return (uint16_t)(data[at] | (data[at + 1] << 8)); };
         auto u32 = [&](size_t at) { return (uint32_t)u16(at) | ((uint32_t)u16(at + 2) << 16); };
 
@@ -131,7 +135,8 @@ namespace scan {
             }
 
             if (memcmp(&data[pos], "data", 4) == 0) {
-                if (channels == 0 || bits != 16 || clip.sampleRate == 0) { return false; }
+                if (channels == 0 || bits != 16) { return false; }
+                if (clip.sampleRate < MIN_SAMPLE_RATE || clip.sampleRate > MAX_SAMPLE_RATE) { return false; }
                 size_t available = data.size() - body;
                 size_t bytes = (size == 0 || size > available) ? available : size;
                 size_t frames = bytes / (2 * channels);
