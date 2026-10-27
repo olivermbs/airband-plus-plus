@@ -1,6 +1,7 @@
 #pragma once
 #include <fftw3.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <vector>
 
@@ -62,7 +63,7 @@ namespace dsp::noise_reduction {
         }
 
         void setStrength(float strength) {
-            gainFloor = std::pow(10.0f, -12.0f * std::clamp<float>(strength, 0.0f, 1.0f) / 20.0f);
+            gainFloor.store(std::pow(10.0f, -12.0f * std::clamp<float>(strength, 0.0f, 1.0f) / 20.0f));
         }
 
         // Output sample i corresponds to input sample i - latency()
@@ -87,6 +88,7 @@ namespace dsp::noise_reduction {
 
     private:
         void processFrame() {
+            float frameFloor = gainFloor.load();
             for (int i = 0; i < size; i++) { time[i] = input[i] * window[i]; }
             fftwf_execute(forward);
 
@@ -121,7 +123,7 @@ namespace dsp::noise_reduction {
                 prior = std::max<float>(prior, MIN_PRIOR);
                 double v = (double)prior * post / (1.0 + prior);
                 float gain = (float)std::min(1.0, prior / (1.0 + prior) * std::exp(0.5 * expint(v)));
-                gains[k] = std::max<float>(gain, gainFloor);
+                gains[k] = std::max<float>(gain, frameFloor);
                 lastGainedPower[k] = gains[k] * gains[k] * p;
             }
 
@@ -184,7 +186,8 @@ namespace dsp::noise_reduction {
         static constexpr float MINIMUM_BIAS = 1.5f;
         // The gain never goes below the floor: hiss is turned down, not removed, so weak speech
         // keeps its sound. Strength 0..1 maps to a floor of 0dB..-12dB.
-        float gainFloor = 0.5f;
+        // Set from the UI thread while the DSP thread reads it
+        std::atomic<float> gainFloor{ 0.5f };
         static constexpr double MIN_WINDOW_SECONDS = 1.5;
         static constexpr double FADE_IN_SECONDS = 0.5;
 

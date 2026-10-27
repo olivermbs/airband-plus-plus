@@ -71,7 +71,7 @@ namespace dsp::demod {
 
         // While *active is false (e.g. the squelch is closed) the AGCs keep their gain instead of
         // adapting to the noise, which made the start of the next transmission blast out
-        void setAGCHold(const std::atomic<bool>* active) { _active = active; }
+        void setAGCHold(const std::atomic<bool>* active) { _active.store(active); }
 
         // Synchronous detection instead of the envelope, better on weak signals
         void setSynchronous(bool synchronous) {
@@ -117,7 +117,8 @@ namespace dsp::demod {
         }
 
         int process(int count, complex_t* in, T* out) {
-            bool hold = _active && !_active->load();
+            const std::atomic<bool>* active = _active.load();
+            bool hold = active && !active->load();
             carrierAgc.setFrozen(hold);
             audioAgc.setFrozen(hold);
 
@@ -176,7 +177,8 @@ namespace dsp::demod {
     protected:
         AGCMode _agcMode;
         bool _synchronous = false;
-        const std::atomic<bool>* _active = nullptr;
+        // Set from the UI thread while the DSP thread reads it
+        std::atomic<const std::atomic<bool>*> _active{ nullptr };
         SynchronousDetector syncDetector;
 
         double _samplerate;
