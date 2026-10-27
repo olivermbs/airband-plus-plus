@@ -970,13 +970,17 @@ private:
         if (present) {
             lastSignal = now;
             confirmedAfterListen = true;
-            presentFrames++;
             // Evidence of a reply elsewhere only counts while this channel is quiet
             replyHits.clear();
         }
         else {
             lastAbsent = now;
         }
+        // The scanner looks once per UI frame, at whatever rate the UI runs: what was heard is the
+        // time between two looks that both heard it
+        if (present && wasPresent) { audibleTime += now - lastLook; }
+        wasPresent = present;
+        lastLook = now;
         // Only while a carrier is heard: the silence after an over counted as a carrier without
         // modulation and skipped busy channels 4s after every short transmission
         if (present) {
@@ -1009,7 +1013,7 @@ private:
 
         // Only a fragment was heard, a click, a key-up or the last syllable of a transmission:
         // it isn't logged or recorded, and there is no reply to wait the linger time for
-        if (confirmedAfterListen && !present && presentFrames < MIN_TRANSMISSION_FRAMES && now - lastSignal >= std::chrono::milliseconds(FRAGMENT_GAP_MS)) {
+        if (confirmedAfterListen && !present && audibleTime < std::chrono::milliseconds(MIN_TRANSMISSION_MS) && now - lastSignal >= std::chrono::milliseconds(FRAGMENT_GAP_MS)) {
             confirmedAfterListen = false;
             fragment(receivingChannel, now);
             return;
@@ -1285,7 +1289,8 @@ private:
         lastSignal = now;
         hold = false;
         framesSinceListen = 0;
-        presentFrames = 0;
+        audibleTime = Clock::duration::zero();
+        wasPresent = false;
         confirmedAfterListen = false;
 
         trackedCenter = (std::fabs(center - receivingFreq) > CARRIER_FOLLOW_HZ) ? center : receivingFreq;
@@ -1495,7 +1500,7 @@ private:
     // frequency for a frame or two
     static constexpr int LISTEN_SETTLE_MS = 150;
     // Less sound than about 0.3s is a fragment, not a transmission, once it was quiet this long
-    static constexpr int MIN_TRANSMISSION_FRAMES = 18;
+    static constexpr int MIN_TRANSMISSION_MS = 300;
     static constexpr int FRAGMENT_GAP_MS = 500;
     static constexpr int FRAGMENTS_TO_SKIP = 3;
     static constexpr int FRAGMENT_MEMORY_MINUTES = 2;
@@ -1663,8 +1668,10 @@ private:
     Clock::time_point lastVfoTune;
     int detectionFactor = 1;
     int framesSinceListen = 0;
-    // Frames the radio's squelch was open since locking on, at the scanner's 60 per second
-    int presentFrames = 0;
+    // How long the radio's squelch was open since locking on
+    Clock::duration audibleTime = Clock::duration::zero();
+    bool wasPresent = false;
+    Clock::time_point lastLook;
     bool confirmedAfterListen = false;
     float receivingSNR = 0.0f;
     double vfoFreq = 0.0;
